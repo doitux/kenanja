@@ -123,7 +123,7 @@ def check():
         import faster_whisper  # noqa
         print('Whisper     : installiert (Text wird zusätzlich per Spracherkennung ausgerichtet)')
     except ImportError:
-        print('Whisper     : nicht installiert (optional)')
+        print('Whisper     : nicht enthalten (optional) – der Text wird über die Silben der Melodie zugeordnet')
     return ok and bool(ff)
 
 

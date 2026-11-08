@@ -101,8 +101,8 @@ Gemessen an echten Songs der Band:
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
 * Melodie: Einsätze werden fast alle gefunden, die Tonhöhe stimmt bei rund drei Vierteln der Noten –
   das Leadsheet daher in MuseScore durchsehen.
-* Text: wird zeilenweise den Gesangsphrasen zugeordnet. Mit installiertem Whisper (Spracherkennung)
-  wird der Text zusätzlich an den gesungenen Wörtern verankert – das hilft bei Wiederholungen.
+* Text: wird zeilenweise den Gesangsphrasen zugeordnet. Optional (nur bei der Installation aus dem
+  Quellcode, nicht in der AppImage) verankert Whisper (Spracherkennung) den Text zusätzlich an den gesungenen Wörtern.
   Passt der eingefügte Text nicht zur Aufnahme (z. B. andere Version), warnt Kenanja.
 
 ## Verwendete freie Software und Modelle

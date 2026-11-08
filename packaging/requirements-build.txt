@@ -11,6 +11,5 @@ fastapi
 uvicorn
 python-multipart
 pillow
-faster-whisper>=1.0
 pyinstaller>=6.10,<7
 pyinstaller-hooks-contrib
