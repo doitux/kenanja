@@ -52,6 +52,10 @@ automatisch gefunden; sonst den Pfad in den Einstellungen eintragen.
 
 Start: im Startmenü **Kenanja** oder im Terminal `kenanja` → der Browser öffnet `http://127.0.0.1:8765`.
 
+**Wo liegt was?** Programm: `~/.local/share/kenanja` · Befehl: `~/.local/bin/kenanja` · Modelle und
+zwischengespeicherte Analysen: `~/.cache/kenanja` · Stimmprofile: `~/.config/kenanja` · Projekte: `~/Kenanja`.
+**Entfernen:** `bash uninstall.sh` (Projekte bleiben) bzw. `bash uninstall.sh --alles`.
+
 ### Kommandozeile
 
 ```bash
