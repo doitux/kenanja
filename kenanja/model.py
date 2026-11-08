@@ -65,6 +65,7 @@ class Bar:
     parts: dict = field(default_factory=dict)    # weitere Stimmen: {'Violine': [Note...], ...}
     texts: list = field(default_factory=list)    # Spielanweisungen im Takt
     audio_start: Optional[float] = None          # Sekunden im Original
+    key: Optional[int] = None                    # Tonartwechsel ab diesem Takt (Vorzeichen: +Kreuze/-Bs)
 
     @property
     def length(self) -> Fraction:
@@ -160,6 +161,9 @@ class Song:
         d = new_tpc - old_tpc
         for sec in new.sections:
             for bar in sec.bars:
+                if bar.key is not None:
+                    k2 = bar.key + d
+                    bar.key = k2 - 12 if k2 > 7 else (k2 + 12 if k2 < -7 else k2)
                 for ce in bar.chords:
                     try:
                         ce.symbol = ChordSymbol.parse(ce.symbol).transposed(d).text()

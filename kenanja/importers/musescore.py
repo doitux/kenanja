@@ -91,6 +91,7 @@ def _parse_staff(staff_el, staff_idx, measures, state):
         if m.find('endRepeat') is not None:
             M.end_repeat = int(m.findtext('endRepeat') or 2)
         data = {'notes': {}, 'chords': [], 'texts': [], 'labels': []}
+        data_key = None
         for vi, v in enumerate(m.findall('voice')):
             pos = F(0)
             tup = F(1)
@@ -99,9 +100,11 @@ def _parse_staff(staff_el, staff_idx, measures, state):
                 if tg == 'TimeSig':
                     ts = (int(el.findtext('sigN')), int(el.findtext('sigD')))
                     state[('ts', staff_idx)] = ts
-                elif tg == 'KeySig' and staff_idx == 0 and 'key' not in state:
-                    k = el.findtext('concertKey') or el.findtext('accidental') or '0'
-                    state['key'] = int(k)
+                elif tg == 'KeySig':
+                    k = int(el.findtext('concertKey') or el.findtext('accidental') or '0')
+                    if staff_idx == 0 and 'key' not in state:
+                        state['key'] = k
+                    data_key = k
                 elif tg == 'Tempo' and 'tempo' not in state:
                     try:
                         state['tempo'] = float(el.findtext('tempo')) * 60
@@ -182,6 +185,7 @@ def _parse_staff(staff_el, staff_idx, measures, state):
                         data['notes'].setdefault(vi, []).append(Note(onset=pos, dur=d))
                     pos += d
         data['ts'] = ts
+        data['key'] = data_key
         M.per_staff[staff_idx] = data
         if data['labels'] and not M.labels:
             M.labels = data['labels']
@@ -281,7 +285,8 @@ def import_musescore(path, lead_staff: int | None = None) -> Song:
         ts = lead.get('ts', (4, 4))
         bar = Bar(num=ts[0], den=ts[1])
         if M.len:
-            bar.num, bar.den = int(M.len), 4
+            fr = M.len / 4
+            bar.num, bar.den = fr.numerator, fr.denominator
         # Akkorde aus allen Zeilen (meist im Leadsheet)
         seen = set()
         for si in sorted(M.per_staff):
@@ -302,6 +307,8 @@ def import_musescore(path, lead_staff: int | None = None) -> Song:
                     nn.lyrics = {0: lv}
             bar.melody.append(nn)
         bar.texts = list(lead.get('texts', []))
+        if lead.get('key') is not None and mi > 0:
+            bar.key = lead['key']
         for si, d in M.per_staff.items():
             if si == lead_staff:
                 continue
