@@ -45,7 +45,8 @@ installieren, AppImage herunterladen, ausführbar machen, starten:
 
 ```bash
 sudo apt install ffmpeg rubberband-cli libreoffice-writer fonts-liberation
-chmod +x Kenanja-*-x86_64.AppImage && ./Kenanja-*-x86_64.AppImage
+mkdir -p ~/Programme && mv Kenanja-*-x86_64.AppImage ~/Programme/Kenanja.AppImage
+chmod +x ~/Programme/Kenanja.AppImage && ~/Programme/Kenanja.AppImage
 ```
 
 Beim ersten Start legt Kenanja einen Eintrag im Startmenü an; die Modelle (ca. 90 MB) lädt es bei der ersten

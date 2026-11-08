@@ -31,7 +31,8 @@ def find_musescore() -> Optional[list[str]]:
     pats = [str(home / 'Applications' / '*MuseScore*.AppImage'), str(home / 'Downloads' / '*MuseScore*.AppImage'),
             str(home / '*MuseScore*.AppImage'), str(home / 'bin' / '*MuseScore*.AppImage'),
             str(home / '.local' / 'bin' / '*MuseScore*.AppImage'), '/opt/*MuseScore*.AppImage',
-            '/opt/*/*MuseScore*.AppImage', str(home / 'Programme' / '*MuseScore*.AppImage')]
+            '/opt/*/*MuseScore*.AppImage', str(home / 'Programme' / '*MuseScore*.AppImage'),
+            str(home / 'Programme' / '*' / '*MuseScore*.AppImage')]
     found = sorted({f for pat in pats for f in glob.glob(pat)}, key=lambda f: os.path.getmtime(f), reverse=True)
     if found:
         return [found[0]]
