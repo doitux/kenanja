@@ -565,6 +565,99 @@ def assign_syllables(syls: list[Syllable], notes: list[VNote]) -> list[tuple[VNo
     return out
 
 
+# ------------------------------------------------------------------ Spracherkennung (optional) ----
+
+def transcribe_words(voc16: np.ndarray, lang: str, model_size: str = 'small') -> list[tuple[float, float, str]]:
+    """Wörter mit Zeitstempeln aus der Gesangsspur (faster-whisper). Leere Liste, wenn nicht verfügbar."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return []
+    from .btc import cache_dir
+    import os
+    os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+    model = WhisperModel(model_size, device='cpu', compute_type='int8', download_root=str(cache_dir() / 'whisper'))
+    segs, _ = model.transcribe(voc16, language=lang, word_timestamps=True, vad_filter=True, beam_size=5,
+                               condition_on_previous_text=False)
+    return [(w.start, w.end, w.word) for s in segs for w in (s.words or [])]
+
+
+def _wnorm(w: str) -> str:
+    import unicodedata
+    w = unicodedata.normalize('NFKD', w.lower())
+    return ''.join(c for c in w if c.isalnum())
+
+
+def _wsim(a: str, b: str) -> float:
+    if not a or not b:
+        return -1
+    if a == b:
+        return 2.0
+    from difflib import SequenceMatcher
+    r = SequenceMatcher(None, a, b).ratio()
+    return 1.0 if r >= 0.75 else (-0.5 if r >= 0.5 else -1.0)
+
+
+def align_lines_asr(lines: list[str], asr: list[tuple[float, float, str]], notes: list['VNote']):
+    """Zeilen über erkannte Wörter verankern (robust bei Wiederholungen und Ad-libs).
+    Liefert Notenbereiche je Zeile oder None, wenn zu wenig erkannt wurde."""
+    words, wline = [], []
+    for li, line in enumerate(lines):
+        for w in re.findall(r"[\w’']+", line):
+            words.append(_wnorm(w))
+            wline.append(li)
+    A = [_wnorm(w) for _, _, w in asr]
+    n, m = len(words), len(A)
+    if n == 0 or m == 0:
+        return None
+    G = -0.6
+    S = np.zeros((n + 1, m + 1), dtype=np.float32)
+    S[1:, 0] = np.arange(1, n + 1) * G
+    S[0, 1:] = np.arange(1, m + 1) * -0.2          # Ad-libs/Fremdwörter im Audio sind billig
+    bt = np.zeros((n + 1, m + 1), dtype=np.int8)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d = S[i - 1, j - 1] + _wsim(words[i - 1], A[j - 1])
+            u = S[i - 1, j] + G
+            l = S[i, j - 1] - 0.2
+            k = int(np.argmax([d, u, l]))
+            S[i, j] = (d, u, l)[k]
+            bt[i, j] = k
+    i, j = n, m
+    match = [None] * n
+    while i > 0 and j > 0:
+        k = bt[i, j]
+        if k == 0:
+            if _wsim(words[i - 1], A[j - 1]) > 0:
+                match[i - 1] = j - 1
+            i, j = i - 1, j - 1
+        elif k == 1:
+            i -= 1
+        else:
+            j -= 1
+    if sum(1 for x in match if x is not None) < 0.4 * n:
+        return None
+    starts, ends = [None] * len(lines), [None] * len(lines)
+    for wi, aj in enumerate(match):
+        if aj is None:
+            continue
+        li = wline[wi]
+        t0, t1 = asr[aj][0], asr[aj][1]
+        starts[li] = t0 if starts[li] is None else min(starts[li], t0)
+        ends[li] = t1 if ends[li] is None else max(ends[li], t1)
+    res = []
+    for li in range(len(lines)):
+        if starts[li] is None:
+            res.append(None)
+            continue
+        nxt = next((starts[k] for k in range(li + 1, len(lines)) if starts[k] is not None), 1e9)
+        a = next((k for k, nn in enumerate(notes) if nn.start >= starts[li] - 0.3), len(notes))
+        b = next((k for k, nn in enumerate(notes) if nn.start >= min(nxt - 0.15, ends[li] + 0.6)), len(notes))
+        res.append((a, b) if b > a else None)
+    # Lücken (nicht erkannte Zeilen) per Silbenzählung dazwischen verteilen
+    return res
+
+
 # ------------------------------------------------------------------ Gesamtablauf ----
 
 @dataclass
@@ -638,7 +731,36 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         syls = text_syllables(blocks, lang)
         lines = [l for b in blocks for l in b.lines]
         counts = [sum(1 for s in syls if s.line == li) for li in range(len(lines))]
-        ranges = align_lines(counts, vnotes)
+        ranges = None
+        if use_asr:
+            try:
+                step('Spracherkennung (Text verankern)', 0.72)
+                voc16 = librosa.resample(voc.mean(0), orig_sr=SR, target_sr=16000)
+                asr = transcribe_words(voc16, lang)
+                if asr:
+                    ranges = align_lines_asr(lines, asr, vnotes)
+                    if ranges:
+                        # nicht verankerte Zeilen zwischen ihren Nachbarn per Silbenzählung einpassen
+                        k = 0
+                        while k < len(ranges):
+                            if ranges[k] is not None:
+                                k += 1
+                                continue
+                            e = k
+                            while e < len(ranges) and ranges[e] is None:
+                                e += 1
+                            lo = ranges[k - 1][1] if k > 0 and ranges[k - 1] else 0
+                            hi = ranges[e][0] if e < len(ranges) and ranges[e] else len(vnotes)
+                            sub = align_lines(counts[k:e], vnotes[lo:hi]) if hi > lo else [None] * (e - k)
+                            for q, r in enumerate(sub):
+                                ranges[k + q] = (r[0] + lo, r[1] + lo) if r else None
+                            k = e
+                        rep['spracherkennung'] = f'{len(asr)} Wörter erkannt'
+            except Exception as e:  # Spracherkennung ist optional
+                rep['spracherkennung'] = f'nicht verfügbar ({type(e).__name__})'
+                ranges = None
+        if ranges is None:
+            ranges = align_lines(counts, vnotes)
         new_notes = []
         consumed = 0
         id_map = {}
@@ -919,17 +1041,47 @@ def _make_sections(bars, blocks, line_ranges, grid, note_syl, beats) -> list[Sec
         pos = b
     if pos < nb:
         out.append([pos, nb, 'Outro', None])
-    # Beschriftung ohne Text: Wiederholungen der Akkordfolge -> Chorus
-    def sig(a, b):
-        return tuple(c.symbol for bar in bars[a:b] for c in bar.chords)
+    # Beschriftung ohne Text: ähnliche Teile gruppieren (Grundtöne pro Takt), häufigster später Teil = Chorus
     if not blocks:
-        sigs = [sig(a, b) for a, b, l, _ in out]
-        from collections import Counter
-        cnt = Counter(s for s, (_, _, l, _) in zip(sigs, out) if l is None)
-        top = max(cnt.items(), key=lambda kv: kv[1])[0] if cnt else None
-        for (o, s) in zip(out, sigs):
-            if o[2] is None:
-                o[2] = 'Chorus' if (s == top and cnt[top] > 1) else 'Verse'
+        def roots(a, b):
+            out = []
+            for bar in bars[a:b]:
+                r = None
+                if bar.chords:
+                    try:
+                        r = ChordSymbol.parse(bar.chords[0].symbol).root_pc()
+                    except ValueError:
+                        r = None
+                out.append(r)
+            return out
+
+        def sim(x, y):
+            n = min(len(x), len(y))
+            if n == 0:
+                return 0.0
+            return sum(1 for i in range(n) if x[i] is not None and x[i] == y[i]) / max(len(x), len(y))
+        vocal = [k for k, o in enumerate(out) if o[2] is None]
+        groups: list[list[int]] = []
+        for k in vocal:
+            rk = roots(out[k][0], out[k][1])
+            for g in groups:
+                if sim(rk, roots(out[g[0]][0], out[g[0]][1])) >= 0.6:
+                    g.append(k)
+                    break
+            else:
+                groups.append([k])
+        if groups:
+            first = groups[0]
+            rest = sorted(groups[1:], key=lambda g: -len(g))
+            for k in first:
+                out[k][2] = 'Verse'
+            if rest:
+                for k in rest[0]:
+                    out[k][2] = 'Chorus'
+                for g in rest[1:]:
+                    for k in g:
+                        out[k][2] = 'Bridge' if len(g) <= 2 else 'Pre-Chorus'
+            # Wenn alles eine Gruppe ist: abwechselnd Verse/Chorus ist geraten -> neutral lassen
     from ..importers.musescore import classify_label, SECTION_ABBR
     counts = {}
     total = {}

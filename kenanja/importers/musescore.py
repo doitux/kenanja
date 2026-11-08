@@ -256,7 +256,10 @@ def import_musescore(path, lead_staff: int | None = None) -> Song:
     major_tpc = 14 + key_sharps
 
     order = _unroll(measures)
-    song = Song(title=title.title() if title.isupper() else title, subtitle=meta.get('subtitle', ''),
+    if title.isupper():
+        small = {'und', 'der', 'die', 'das', 'ein', 'eine', 'zu', 'im', 'in', 'wie', 'of', 'the', 'and', 'to', 'a', 'my'}
+        title = ' '.join(w.lower() if (k and w.lower() in small) else w.capitalize() for k, w in enumerate(title.split()))
+    song = Song(title=title, subtitle=meta.get('subtitle', ''),
                 authors=authors, key=key_name(major_tpc), tempo=round(state.get('tempo', 80)))
     sections: list[Section] = []
     label_counts: dict = {}

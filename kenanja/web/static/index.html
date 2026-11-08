@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kenanja</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand" onclick="showHome()">
+    <span class="logo">♪</span>
+    <div><b>Kenanja</b><small>„Kenanja leitete den Gesang, denn er verstand sich darauf.“ – 1. Chronik 15,22</small></div>
+  </div>
+  <nav>
+    <button class="ghost" onclick="showHome()">Songs</button>
+    <button class="ghost" onclick="showSettings()">Einstellungen</button>
+  </nav>
+</header>
+<main id="app"></main>
+<audio id="player" preload="none"></audio>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import base64
 import glob
+import re
+import tempfile
 import json
 import os
 import shutil
@@ -45,14 +47,18 @@ def version(ms=None) -> str:
     if not ms:
         return ''
     r = _run(ms + ['--long-version'], timeout=60)
-    return (r.stdout or r.stderr or '').strip().splitlines()[0] if (r.stdout or r.stderr) else ''
+    for line in ((r.stdout or '') + '\n' + (r.stderr or '')).splitlines():
+        if re.search(r'MuseScore|\d+\.\d+\.\d+', line) and 'QStandardPaths' not in line:
+            return line.strip()
+    return ''
 
 
 def _env():
     env = dict(os.environ)
     env.setdefault('QT_QPA_PLATFORM', 'offscreen')
     env.setdefault('APPIMAGE_EXTRACT_AND_RUN', '1')   # AppImage auch ohne FUSE
-    env.setdefault('XDG_RUNTIME_DIR', '/tmp')
+    if 'XDG_RUNTIME_DIR' not in env:
+        env['XDG_RUNTIME_DIR'] = tempfile.mkdtemp(prefix='kenanja-rt-')
     return env
 
 

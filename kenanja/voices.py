@@ -64,8 +64,7 @@ def load_profiles(path=None) -> dict[str, VoiceProfile]:
 
 def save_profiles(profiles: dict[str, VoiceProfile], path=None) -> Path:
     path = Path(path or config_dir() / 'stimmprofile.json')
-    path.write_text(json.dumps([asdict(p) for p in profiles.values() if not p.is_congregation],
-                               ensure_ascii=False, indent=1), encoding='utf-8')
+    path.write_text(json.dumps([asdict(p) for p in profiles.values()], ensure_ascii=False, indent=1), encoding='utf-8')
     return path
 
 
@@ -218,9 +217,11 @@ def evaluate_shift(song: Song, shift: int, profiles: dict[str, VoiceProfile], de
                 w = 2.5 * (cnt + beats) * (1 + wl - q)
                 issues.append(Issue(vp.name, where, f"{name} {cnt}× – da wird es dünn", w))
         score += sum(i.weight for i in issues if i.who == vp.name)
-    # leichte Bevorzugung kleiner Verschiebungen
+    # leichte Bevorzugung kleiner Verschiebungen und bandfreundlicher Tonarten (wenig Vorzeichen)
     score += abs(shift) * 0.5
     old_tpc, minor = song.key_tpc()
+    acc = abs(best_key_for_shift(old_tpc, shift) - 14)
+    score += max(0, acc - 3) * 6
     key = key_name(best_key_for_shift(old_tpc, shift), minor)
     return {'shift': shift, 'key': key, 'key_de': key_name_de(best_key_for_shift(old_tpc, shift), minor),
             'score': round(score, 1), 'issues': sorted(issues, key=lambda i: -i.weight),
