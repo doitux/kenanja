@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Python packages
+        run: pip install -e . pytest
+      - name: Tests
+        run: python -m pytest -q tests
+
+  appimage:
+    name: AppImage (bauen + Probelauf)
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: git für den Checkout
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Bauen
+        run: |
+          set -o pipefail
+          export KENANJA_BUILD="nightly-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          packaging/ci_build.sh 2>&1 | tee build.log
+      - name: Probelauf (Analyse, Export, Fenster)
+        env:
+          SMOKE_SCREENSHOT: dist/window.png
+        run: |
+          set -o pipefail
+          xvfb-run -a -s "-screen 0 1600x1000x24" python3 tests/smoke_appimage.py dist/Kenanja-*-x86_64.AppImage --gui 2>&1 | tee smoke.log
+      - name: Details bei Fehler
+        if: failure()
+        run: |
+          tail -n 80 build.log || true
+          tail -n 120 smoke.log || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kenanja-AppImage
+          path: |
+            dist/Kenanja-*-x86_64.AppImage
+            dist/SHA256SUMS
+            dist/window.png
+          retention-days: 14
+
+  nightly:
+    name: Testversion veröffentlichen
+    needs: appimage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: nightly-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: Kenanja-AppImage
+          path: dist
+      - name: Nightly-Vorabversion aktualisieren
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/publish-nightly.sh dist/Kenanja-nightly-*-x86_64.AppImage dist/SHA256SUMS

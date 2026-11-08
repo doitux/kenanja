@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Kenanja
+GenericName=Noten für die Lobpreisband
+Comment=Chord-Sheets, Leadsheets, Streicher, Chorblatt und Übe-Audio aus einem MP3
+Exec=kenanja %F
+Icon=kenanja
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=Noten;Chords;Leadsheet;Band;Lobpreis;MuseScore;
+StartupWMClass=kenanja

@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Versions-Tag, z. B. v1.0.0 (leer = nur bauen und testen)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: git für den Checkout
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Version passt zum Tag
+        if: env.TAG != ''
+        run: |
+          V=$(sed -n "s/^__version__ = '\(.*\)'/\1/p" kenanja/__init__.py)
+          test "v$V" = "$TAG" || { echo "::error::Tag $TAG passt nicht zu Version $V"; exit 1; }
+      - name: Bauen
+        run: |
+          set -o pipefail
+          packaging/ci_build.sh 2>&1 | tee build.log
+      - name: Probelauf
+        env:
+          SMOKE_SCREENSHOT: dist/window.png
+        run: |
+          set -o pipefail
+          xvfb-run -a -s "-screen 0 1600x1000x24" python3 tests/smoke_appimage.py dist/Kenanja-*-x86_64.AppImage --gui 2>&1 | tee smoke.log
+      - name: Release-Text
+        if: env.TAG != ''
+        run: |
+          V="${TAG#v}"
+          {
+            echo "## Kenanja $V"
+            echo
+            echo "Linux-AppImage (x86-64, Ubuntu/Kubuntu 22.04 und neuer)."
+            echo
+            echo '```bash'
+            echo 'sudo apt install ffmpeg rubberband-cli libreoffice-writer fonts-liberation'
+            echo "chmod +x Kenanja-$V-x86_64.AppImage && ./Kenanja-$V-x86_64.AppImage"
+            echo '```'
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > dist/NOTES.md
+      - uses: softprops/action-gh-release@v2
+        if: env.TAG != ''
+        with:
+          name: Kenanja ${{ env.TAG }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          body_path: dist/NOTES.md
+          files: |
+            dist/Kenanja-*-x86_64.AppImage
+            dist/SHA256SUMS

@@ -7,6 +7,7 @@
   kenanja tonart song.kenanja.json
   kenanja erzeugen song.kenanja.json [-o Ausgabeordner] [--transponieren N] [--bitrate 256] [--band S&L]
   kenanja pruefen             zeigt, ob MuseScore, LibreOffice, Rubber Band und die Modelle bereit sind
+  kenanja deinstallieren      entfernt Kenanja restlos (Projekte bleiben; mit --alles auch die Projekte)
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ from pathlib import Path
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='kenanja', description='Kenanja – aus einem MP3 Chord-Sheet, Leadsheet, '
                                  'Streicherstimmen, Chorblatt und Übe-Audio für deine Band machen.')
+    from .util import version_text
+    ap.add_argument('--version', action='version', version=f'Kenanja {version_text()}')
     sub = ap.add_subparsers(dest='cmd')
     fe = sub.add_parser('fenster', help='im eigenen Fenster starten (Standard)')
     fe.add_argument('--port', type=int, default=0)
@@ -45,11 +48,17 @@ def main(argv=None):
     e.add_argument('--nebenstimmen', action='store_true')
     e.add_argument('--satb', action='store_true')
     sub.add_parser('pruefen', help='Installation prüfen')
+    de = sub.add_parser('deinstallieren', help='Kenanja restlos entfernen (Projekte bleiben, außer --alles)')
+    de.add_argument('--alles', action='store_true', help='auch alle Kenanja-Projekte löschen')
     args = ap.parse_args(argv)
 
     if args.cmd in (None, 'fenster'):
         from .fenster import main as fenster
         sys.exit(fenster(port=getattr(args, 'port', 0)))
+    if args.cmd == 'deinstallieren':
+        from .util import uninstall
+        uninstall(args.alles)
+        return
     if args.cmd == 'web':
         from .web.app import main as web
         web(port=args.port, open_browser=not args.kein_browser)

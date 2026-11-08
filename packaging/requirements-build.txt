@@ -1,0 +1,16 @@
+# Bauumgebung der AppImage (Python 3.10 auf Ubuntu 22.04)
+PySide6==6.9.2
+numpy>=1.26,<2.3
+scipy
+librosa>=0.10
+soundfile
+onnxruntime>=1.16
+music21>=9
+pyphen
+fastapi
+uvicorn
+python-multipart
+pillow
+faster-whisper>=1.0
+pyinstaller>=6.10,<7
+pyinstaller-hooks-contrib

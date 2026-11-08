@@ -37,18 +37,25 @@ Alles läuft **lokal auf dem eigenen Rechner** (Linux, ohne Grafikkarte) – in 
 
 In MuseScore korrigierte Leadsheets lassen sich wieder **importieren** – danach Chord-Sheet, Streicher usw. neu erzeugen.
 
-## Installation (Kubuntu/Ubuntu)
+## Installation (Kubuntu/Ubuntu 22.04 und neuer)
+
+Kenanja gibt es – wie Pulsecut – als fertiges Programm (**AppImage**, eine einzige Datei) unter
+[Releases → Testversion](https://github.com/doitux/kenanja/releases/tag/nightly). Einmal die Hilfsprogramme
+installieren, AppImage herunterladen, ausführbar machen, starten:
 
 ```bash
-git clone https://github.com/doitux/kenanja.git
-cd kenanja
-bash install.sh
+sudo apt install ffmpeg rubberband-cli libreoffice-writer fonts-liberation
+chmod +x Kenanja-*-x86_64.AppImage && ./Kenanja-*-x86_64.AppImage
 ```
 
-`install.sh` installiert die Systempakete (ffmpeg, Rubber Band, LibreOffice Writer, Liberation-Schriften),
-richtet Kenanja in einer eigenen Python-Umgebung ein (`~/.local/share/kenanja`), legt den Befehl `kenanja`
-und einen Eintrag im Startmenü an und lädt die Modelle. **MuseScore 4** (AppImage, Flatpak oder Paket) wird
-automatisch gefunden; sonst den Pfad in den Einstellungen eintragen.
+Beim ersten Start legt Kenanja einen Eintrag im Startmenü an; die Modelle (ca. 90 MB) lädt es bei der ersten
+Analyse. **MuseScore 4** (AppImage, Flatpak oder Paket) wird automatisch gefunden; sonst den Pfad in den
+Einstellungen eintragen. Restlos entfernen: `./Kenanja-…AppImage deinstallieren` (Projekte bleiben,
+mit `--alles` auch die Projekte).
+
+Aus dem Quellcode (Entwicklung): `git clone https://github.com/doitux/kenanja.git && cd kenanja && bash install.sh`
+richtet Kenanja in einer Python-Umgebung unter `~/.local/share/kenanja` ein. Die AppImage selbst wird bei jedem
+Stand auf `main` automatisch gebaut und getestet (`packaging/`, `.github/workflows/ci.yml`).
 
 Start: im Startmenü **Kenanja** oder im Terminal `kenanja` – es öffnet sich ein eigenes Fenster (Qt WebEngine,
 wie bei Pulsecut). Ein zweiter Start holt das offene Fenster nach vorne. Lieber im normalen Browser: `kenanja web`
@@ -72,7 +79,7 @@ werden dann mit verschoben). Jeder Song bekommt einen Ordner mit seinem Namen:
 
 **Wo liegt sonst noch was?** Programm: `~/.local/share/kenanja` · Befehl: `~/.local/bin/kenanja` · Modelle:
 `~/.cache/kenanja` · Einstellungen und Stimmprofile: `~/.config/kenanja`.
-**Entfernen:** `bash uninstall.sh` (Projekte bleiben) bzw. `bash uninstall.sh --alles`.
+**Entfernen:** `kenanja deinstallieren` (Projekte bleiben) bzw. `kenanja deinstallieren --alles`.
 
 ### Kommandozeile
 

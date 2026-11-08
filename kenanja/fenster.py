@@ -73,6 +73,12 @@ def _neustart(stufe: str):
     for k in ('QTWEBENGINE_CHROMIUM_FLAGS', 'QSG_RHI_BACKEND'):
         env.pop(k, None)
     sys.stdout.flush()
+    if getattr(sys, 'frozen', False):   # AppImage: als neuer Programmstart
+        from .util import clean_env
+        env = clean_env(env)
+        env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+        exe = os.environ.get('APPIMAGE') or sys.executable
+        os.execve(exe, [exe, 'fenster'], env)
     os.execve(sys.executable, [sys.executable, '-m', 'kenanja', 'fenster'], env)
 
 
@@ -169,8 +175,9 @@ def run(url: str) -> int:
             _schreiben(geometrie=geo)
             ev.accept()
 
+    from .util import version_text
     win = Fenster()
-    win.setWindowTitle(APP)
+    win.setWindowTitle(f'{APP} {version_text()}')
     win.resize(1360, 900)
     geo = _lesen().get('geometrie')
     if geo:
