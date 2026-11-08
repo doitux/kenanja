@@ -18,7 +18,7 @@
 Dazu: **Stimmprofile** (wer singt bequem bis wohin, wo wird es dünn, was schafft die Gemeinde) und ein
 **Tonart-Vorschlag**, der zeigt, wie oft und wie lange Spitzen- und Tieftöne vorkommen.
 
-Alles läuft **lokal auf dem eigenen Rechner** (Linux, ohne Grafikkarte). Die Bedienung erfolgt im Browser.
+Alles läuft **lokal auf dem eigenen Rechner** (Linux, ohne Grafikkarte) – in einem eigenen Programmfenster.
 
 ## Ablauf
 
@@ -50,12 +50,28 @@ richtet Kenanja in einer eigenen Python-Umgebung ein (`~/.local/share/kenanja`),
 und einen Eintrag im Startmenü an und lädt die Modelle. **MuseScore 4** (AppImage, Flatpak oder Paket) wird
 automatisch gefunden; sonst den Pfad in den Einstellungen eintragen.
 
-Start: im Startmenü **Kenanja** oder im Terminal `kenanja` → der Browser öffnet `http://127.0.0.1:8765`.
+Start: im Startmenü **Kenanja** oder im Terminal `kenanja` – es öffnet sich ein eigenes Fenster (Qt WebEngine,
+wie bei Pulsecut). Ein zweiter Start holt das offene Fenster nach vorne. Lieber im normalen Browser: `kenanja web`
+(oder Rechtsklick auf den Startmenü-Eintrag → „Im Browser öffnen“). Bleibt das Fenster weiß, schaltet Kenanja
+selbst auf eine einfachere Grafikausgabe um.
 
-**Wo liegt was?** Programm: `~/.local/share/kenanja` · Befehl: `~/.local/bin/kenanja` · Modelle:
-`~/.cache/kenanja` · Einstellungen und Stimmprofile: `~/.config/kenanja` · Projekte (inkl. getrennter Spuren)
-und fertige Dateien: standardmäßig `~/Kenanja` – **Projekt- und Ausgabeordner sind in den Einstellungen frei
-wählbar** (z. B. eine andere Platte oder der Bandordner); vorhandene Projekte werden dabei mit verschoben.
+**Projekte** liegen standardmäßig in `~/Projekte/Kenanja` (in den Einstellungen änderbar, vorhandene Projekte
+werden dann mit verschoben). Jeder Song bekommt einen Ordner mit seinem Namen:
+
+```
+~/Projekte/Kenanja/Draw Me Close/
+├── projekt.json, song.kenanja.json, liedtext.txt   Bearbeitungsstand
+├── Original/    dein MP3/WAV bzw. die importierte MuseScore-Datei
+├── Analyse/     Zwischenspeicher (getrennter Gesang) – darf gelöscht werden
+├── Export/      Chord-Sheet, Leadsheet, Partitur, Stimmen, Chorblatt, Übe-MP3 …
+└── Vorschau/    schnelle Vorschau-PDFs
+```
+
+Ändert sich der Titel, wird der Ordner mit umbenannt. Optional kopiert Kenanja jeden Export zusätzlich in einen
+**Band-Ordner** (z. B. den geteilten Cloud-Ordner).
+
+**Wo liegt sonst noch was?** Programm: `~/.local/share/kenanja` · Befehl: `~/.local/bin/kenanja` · Modelle:
+`~/.cache/kenanja` · Einstellungen und Stimmprofile: `~/.config/kenanja`.
 **Entfernen:** `bash uninstall.sh` (Projekte bleiben) bzw. `bash uninstall.sh --alles`.
 
 ### Kommandozeile
@@ -64,7 +80,7 @@ wählbar** (z. B. eine andere Platte oder der Bandordner); vorhandene Projekte w
 kenanja analyse song.mp3 --text liedtext.txt --titel "Draw Me Close" --autoren "Kelly Carpenter"
 kenanja import leadsheet.mscz
 kenanja tonart song.kenanja.json
-kenanja erzeugen song.kenanja.json -o ~/Band/Songs --transponieren -3 --bitrate 320 --band "S&L"
+kenanja erzeugen song.kenanja.json -o ~/Band/Songs/Draw\ Me\ Close --transponieren -3 --bitrate 320 --band "S&L"
 kenanja pruefen
 ```
 

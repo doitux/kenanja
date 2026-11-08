@@ -8,6 +8,10 @@ async function api(path, opts = {}) {
   if (!r.ok) { let t = await r.text(); try { t = JSON.parse(t).detail } catch (e) {} throw new Error(t); }
   return r.headers.get('content-type')?.includes('json') ? r.json() : r;
 }
+const pu = id => '/api/projekte/' + encodeURIComponent(id);
+let BRIDGE = null;     // im eigenen Kenanja-Fenster: Ordnerauswahl, Links im normalen Browser
+if (window.qt && window.qt.webChannelTransport && window.QWebChannel) new QWebChannel(qt.webChannelTransport, ch => { BRIDGE = ch.objects.bridge; });
+let LIST = [];
 let P = null;          // aktuelles Projekt
 let TAB = 'song';
 let SETTINGS = null;
@@ -19,7 +23,7 @@ const ROLES = {auto: 'automatisch', tacet: 'tacet', pad: 'Liegetöne', counter: 
 // ------------------------------------------------------------- Start ----
 async function showHome() {
   P = null;
-  const list = await api('/api/projekte');
+  const list = LIST = await api('/api/projekte');
   app.innerHTML = `
   <div class="grid2">
    <div class="card">
@@ -37,9 +41,9 @@ async function showHome() {
    </div>
    <div class="card">
     <h2 style="margin-top:0">Deine Songs</h2>
-    ${list.length ? `<table>${list.map(p => `<tr><td><a href="#" onclick="openProject('${p.id}');return false"><b>${esc(p.titel)}</b></a>
+    ${list.length ? `<table>${list.map((p, i) => `<tr><td><a href="#" onclick="openProject(LIST[${i}].id);return false"><b>${esc(p.titel)}</b></a>
        <div class="muted small">${esc(p.autoren || '')}</div></td><td class="small">${p.status === 'analyse' ? '⏳ Analyse läuft' : p.status === 'fehler' ? '⚠️ Fehler' : '✔'}</td>
-       <td><button class="small danger" onclick="delProject('${p.id}')">Löschen</button></td></tr>`).join('')}</table>` : '<p class="muted">Noch keine Songs.</p>'}
+       <td><button class="small danger" onclick="delProject(LIST[${i}].id)">Löschen</button></td></tr>`).join('')}</table>` : '<p class="muted">Noch keine Songs.</p>'}
     <h2>Vorhandene Noten übernehmen</h2>
     <p class="muted small">Ein Leadsheet bzw. eine Partitur aus MuseScore (.mscz) einlesen – z. B. um daraus Chord-Sheet, Streicher und Chorblatt zu erzeugen
     oder ein in MuseScore korrigiertes Leadsheet wieder zurückzuholen.</p>
@@ -49,7 +53,13 @@ async function showHome() {
 }
 function searchLyrics() {
   const q = `${$('#f_titel').value} ${$('#f_autoren').value} Songtext`.trim();
-  window.open('https://www.google.com/search?q=' + encodeURIComponent(q), '_blank');
+  extern('https://www.google.com/search?q=' + encodeURIComponent(q));
+}
+function extern(url) { if (BRIDGE) BRIDGE.extern(url); else window.open(url, '_blank'); }
+async function oeffnen(pfad) { try { await api('/api/oeffnen', {method: 'POST', body: {pfad}}); } catch (e) { alert(e.message); } }
+async function ordnerWaehlen(id, titel) {
+  if (!BRIDGE) return;
+  BRIDGE.ordnerWaehlen(titel, $('#' + id).value, d => { if (d) $('#' + id).value = d; });
 }
 async function createProject() {
   const f = $('#f_audio').files[0];
@@ -66,11 +76,11 @@ async function importMscz() {
   const r = await api('/api/projekte/import', {method: 'POST', body: fd});
   openProject(r.id);
 }
-async function delProject(id) { if (confirm('Song wirklich löschen?')) { await api('/api/projekte/' + id, {method: 'DELETE'}); showHome(); } }
+async function delProject(id) { if (confirm('Song wirklich löschen?')) { await api(pu(id), {method: 'DELETE'}); showHome(); } }
 
 // ------------------------------------------------------------- Projekt ----
 async function openProject(id) {
-  const d = await api('/api/projekte/' + id);
+  const d = await api(pu(id));
   if (d.job && d.job.status === 'analyse') { renderProgress(d); setTimeout(() => openProject(id), 1500); return; }
   if (!d.song) { app.innerHTML = `<div class="card"><h2>Fehler bei der Analyse</h2><p>${esc(d.meta.fehler || d.job?.fehler || '')}</p></div>`; return; }
   P = d; if (!SETTINGS) SETTINGS = await api('/api/einstellungen');
@@ -90,19 +100,25 @@ function render() {
      <span class="pill">Tempo ${Math.round(s.tempo)}</span>${rep.takt ? `<span class="pill">${rep.takt}-Takt</span>` : ''}
      ${rep.zeilen ? `<span class="pill">${esc(rep.zeilen)}</span>` : ''}</div></div>
     <div class="row"><button onclick="openPdf('chordsheet')">Chord-Sheet ↗</button><button onclick="openPdf('chortext')">Chortext ↗</button>
-     <button onclick="openPdf('gitarre')">Gitarre ↗</button></div></div>
+     <button onclick="openPdf('gitarre')">Gitarre ↗</button><button onclick="oeffnen(P.pfad)" title="${esc(P.pfad)}">📁 Projektordner</button></div></div>
    <div class="tabs">${[['song', '1 · Song & Text'], ['ablauf', '2 · Ablauf'], ['besetzung', '3 · Besetzung'], ['stimmen', '4 · Stimmen & Tonart'], ['erzeugen', '5 · Erzeugen']]
       .map(([k, t]) => `<button class="${TAB === k ? 'active' : ''}" onclick="TAB='${k}';render()">${t}</button>`).join('')}</div>
    <div id="tab"></div>`;
   ({song: tabSong, ablauf: tabAblauf, besetzung: tabBesetzung, stimmen: tabStimmen, erzeugen: tabErzeugen})[TAB]();
 }
-function openPdf(art) { window.open(`/api/projekte/${P.id}/vorschau/${art}?t=${Date.now()}`, '_blank'); }
+async function openPdf(art) {
+  if (!BRIDGE) return window.open(`${pu(P.id)}/vorschau/${art}?t=${Date.now()}`, '_blank');
+  document.body.style.cursor = 'progress';
+  try { await api(`${pu(P.id)}/vorschau/${art}?oeffnen=1`); } catch (e) { alert(e.message); }
+  document.body.style.cursor = '';
+}
 async function saveSong(patch, rerender = true) {
-  P.song = await api(`/api/projekte/${P.id}/song`, {method: 'PUT', body: patch});
+  P.song = await api(`${pu(P.id)}/song`, {method: 'PUT', body: patch});
+  if (P.song.id && P.song.id !== P.id) { P.id = P.song.id; P.pfad = P.pfad.replace(/[^/]+$/, P.id); }
   if (rerender) render();
 }
 function play(t0, t1) {
-  const a = $('#player'); a.src = `/api/projekte/${P.id}/audio`;
+  const a = $('#player'); a.src = `${pu(P.id)}/audio`;
   a.currentTime = t0 || 0; a.play();
   if (t1) { const stop = () => { if (a.currentTime >= t1) { a.pause(); a.removeEventListener('timeupdate', stop); } }; a.addEventListener('timeupdate', stop); }
 }
@@ -150,9 +166,9 @@ async function saveSections() {
   const form = P.song.form.map(f => { const n = secs.find(x => x.id === f.section); return n && (f.label === old[f.section] || !f.label) ? {...f, label: n.label} : f; });
   await saveSong({sections: secs, form});
 }
-async function copySection(id) { P.song = await api(`/api/projekte/${P.id}/abschnitt-kopieren/${id}`, {method: 'POST'}); render(); }
+async function copySection(id) { P.song = await api(`${pu(P.id)}/abschnitt-kopieren/${id}`, {method: 'POST'}); render(); }
 async function reanalyse() {
-  await api(`/api/projekte/${P.id}/neu-analysieren`, {method: 'POST', body: {text: $('#s_full').value, titel: P.song.title, autoren: P.song.authors}});
+  await api(`${pu(P.id)}/neu-analysieren`, {method: 'POST', body: {text: $('#s_full').value, titel: P.song.title, autoren: P.song.authors}});
   openProject(P.id);
 }
 
@@ -224,7 +240,7 @@ function lineupChange() {
 
 // ---- 4: Stimmen & Tonart
 async function tabStimmen() {
-  const [profs, keys] = await Promise.all([api('/api/stimmprofile'), api(`/api/projekte/${P.id}/tonart`)]);
+  const [profs, keys] = await Promise.all([api('/api/stimmprofile'), api(`${pu(P.id)}/tonart`)]);
   window.PROFS = profs;
   const singers = profs.filter(p => !p.is_congregation), u = keys.umfang || {};
   $('#tab').innerHTML = `
@@ -276,7 +292,10 @@ function tabErzeugen() {
     ${opt('nebenstimmen', 'Nebenstimmen für Sänger (über/unter der Melodie)', false)}${opt('satb', 'Chorsatz SATB (Refrain/Choral)', false)}
     ${opt('ueben', 'Übe-Audio: Original transponiert + auf euren Ablauf geschnitten')}${opt('uebespuren', 'Übe-Spuren aus MuseScore', false)}
    </div><div class="card"><h3>Einstellungen</h3>
-    <label>Ausgabeordner</label><input type="text" id="o_ausgabe" value="${esc(SETTINGS.ausgabe)}">
+    <p class="small" style="margin-top:0">Ziel: <a href="#" onclick="oeffnen(P.pfad + '/Export');return false">${esc(P.pfad)}/Export</a></p>
+    <label>Zusätzlich kopieren in (optional, z. B. Band-Ordner in der Cloud)</label>
+    <div class="row" style="flex-wrap:nowrap"><input type="text" style="flex:1" id="o_bandordner" value="${esc(SETTINGS.bandordner || '')}" placeholder="leer = nur im Projekt">
+     ${BRIDGE ? `<button class="small" onclick="ordnerWaehlen('o_bandordner','Band-Ordner wählen')">Wählen …</button>` : ''}</div>
     <div class="grid2"><div><label>Bandname (für „…-Ablauf.mp3“)</label><input type="text" id="o_band" value="${esc(SETTINGS.band)}"></div>
     <div><label>MP3-Qualität</label><select id="o_bitrate">${['128', '192', '256', '320', 'V0'].map(b => `<option ${String(SETTINGS.bitrate) === b ? 'selected' : ''} value="${b}">${b === 'V0' ? 'VBR V0 (variabel, höchste)' : b + ' kbit/s'}</option>`).join('')}</select></div></div>
     <label>Streicher (Name · Instrument · Niveau)</label>
@@ -296,30 +315,35 @@ function addPlayer() { $('#players').insertAdjacentHTML('beforeend', playerRow({
 async function runExport() {
   const ids = ['chordsheet', 'leadsheet', 'partitur', 'chortext', 'gitarre', 'klavier', 'nebenstimmen', 'satb', 'ueben', 'uebespuren'];
   const body = Object.fromEntries(ids.map(k => [k, $('#o_' + k).checked]));
-  body.ausgabe = $('#o_ausgabe').value; body.band = $('#o_band').value; body.bitrate = $('#o_bitrate').value;
+  body.bandordner = $('#o_bandordner').value.trim(); body.band = $('#o_band').value; body.bitrate = $('#o_bitrate').value;
   body.spieler = [...document.querySelectorAll('.pl')].map(r => ({name: $('.pl_n', r).value, instrument: $('.pl_i', r).value, level: $('.pl_l', r).value}));
-  SETTINGS = await api('/api/einstellungen', {method: 'PUT', body: {ausgabe: body.ausgabe, band: body.band, bitrate: body.bitrate, spieler: body.spieler, besetzung: SETTINGS.besetzung}});
-  await api(`/api/projekte/${P.id}/erzeugen`, {method: 'POST', body});
+  SETTINGS = await api('/api/einstellungen', {method: 'PUT', body: {bandordner: body.bandordner, band: body.band, bitrate: body.bitrate, spieler: body.spieler, besetzung: SETTINGS.besetzung}});
+  await api(`${pu(P.id)}/erzeugen`, {method: 'POST', body});
   pollExport();
 }
 async function pollExport() {
-  const j = await api(`/api/projekte/${P.id}/erzeugen`), box = $('#exp'); if (!box) return;
+  const j = await api(`${pu(P.id)}/erzeugen`), box = $('#exp'); if (!box) return;
   if (j.status === 'läuft') { box.innerHTML = `<div class="card"><h3>Wird erzeugt …</h3><div class="log">${esc((j.log || []).join('\n'))}</div></div>`; setTimeout(pollExport, 1500); return; }
   if (j.status === 'fehler') { box.innerHTML = `<div class="card"><h3>Fehler</h3><p>${esc(j.fehler)}</p></div>`; return; }
   const r = j.ergebnis || {};
-  box.innerHTML = `<div class="card"><h3>Fertig ✔</h3><p class="muted small">Ordner: ${esc(r.ordner)}</p>
+  box.innerHTML = `<div class="card"><div class="spread"><h3>Fertig ✔</h3><button onclick="oeffnen(${esc(JSON.stringify(r.ordner))})">📁 Export-Ordner öffnen</button></div>
+   <p class="muted small">${esc(r.ordner)}${r.kopie ? '<br>Kopie: ' + esc(r.kopie) : ''}</p>
    ${r.fehler && r.fehler.length ? `<div class="hint">${r.fehler.map(esc).join('<br>')}</div>` : ''}
-   <div class="files">${Object.entries(r.dateien || {}).map(([k, fs]) => `<div style="margin:8px 0"><b>${esc(k)}</b>${fs.map(f => `<a href="/api/datei?pfad=${encodeURIComponent(f)}" target="_blank">${esc(f.split('/').pop())}</a>`).join('')}</div>`).join('')}</div></div>`;
+   <div class="files">${Object.entries(r.dateien || {}).map(([k, fs]) => `<div style="margin:8px 0"><b>${esc(k)}</b>${fs.map(f => `<a href="#" onclick="oeffnen(${esc(JSON.stringify(f))});return false" title="öffnen">${esc(f.split('/').pop())}</a>`).join('')}</div>`).join('')}</div></div>`;
 }
 
 // ------------------------------------------------------------- Einstellungen ----
 async function showSettings() {
   SETTINGS = await api('/api/einstellungen'); const g = SETTINGS.gefunden;
   app.innerHTML = `<div class="card"><h1>Einstellungen</h1>
-   <div class="grid2"><div><label>Projektordner (Audio, Analysen, Bearbeitungsstand)</label><input type="text" id="e_proj" value="${esc(SETTINGS.projektordner)}">
-     <div class="muted small">Z. B. auf einer anderen Platte: /media/daten/Kenanja. Vorhandene Projekte werden beim Speichern dorthin verschoben.</div></div>
-   <div><label>Ausgabeordner (fertige Blätter, Noten, MP3s)</label><input type="text" id="e_out" value="${esc(SETTINGS.ausgabe)}">
-     <div class="muted small">Z. B. dein Bandordner: ~/Band/Fertig/Songs</div></div></div>
+   <div class="grid2"><div><label>Projektordner</label>
+     <div class="row" style="flex-wrap:nowrap"><input type="text" style="flex:1" id="e_proj" value="${esc(SETTINGS.projektordner)}">${BRIDGE ? `<button class="small" onclick="ordnerWaehlen('e_proj','Projektordner wählen')">Wählen …</button>` : ''}</div>
+     <div class="muted small">Jeder Song bekommt darin einen eigenen Ordner mit seinem Namen:<br>
+     <code>Original/</code> (dein Audio) · <code>Analyse/</code> (Zwischenspeicher) · <code>Export/</code> (Blätter, Noten, MP3s) · <code>Vorschau/</code><br>
+     Beim Ändern werden vorhandene Projekte mit verschoben.</div></div>
+   <div><label>Band-Ordner (optional)</label>
+     <div class="row" style="flex-wrap:nowrap"><input type="text" style="flex:1" id="e_band_dir" value="${esc(SETTINGS.bandordner || '')}" placeholder="leer = Export bleibt nur im Projekt">${BRIDGE ? `<button class="small" onclick="ordnerWaehlen('e_band_dir','Band-Ordner wählen')">Wählen …</button>` : ''}</div>
+     <div class="muted small">Fertige Exporte werden zusätzlich dorthin kopiert, z. B. in den geteilten Cloud-Ordner der Band.</div></div></div>
    <div class="grid2"><div><label>Bandname</label><input type="text" id="e_band" value="${esc(SETTINGS.band)}"></div><div></div></div>
    <label>Band-Besetzung (Kürzel, mit Komma getrennt)</label><input type="text" id="e_inst" value="${esc((SETTINGS.besetzung || []).join(', '))}">
    <label>MuseScore-Programm (leer = automatisch suchen)</label><input type="text" id="e_ms" value="${esc(SETTINGS.musescore)}" placeholder="${esc(g.musescore)}">
@@ -330,7 +354,7 @@ async function showSettings() {
 async function saveSettings() {
   let r;
   try {
-    r = await api('/api/einstellungen', {method: 'PUT', body: {projektordner: $('#e_proj').value, ausgabe: $('#e_out').value, band: $('#e_band').value,
+    r = await api('/api/einstellungen', {method: 'PUT', body: {projektordner: $('#e_proj').value, bandordner: $('#e_band_dir').value.trim(), band: $('#e_band').value,
       musescore: $('#e_ms').value, besetzung: $('#e_inst').value.split(',').map(s => s.trim()).filter(Boolean)}});
   } catch (e) { return alert(e.message); }
   if (r.verschoben) alert(r.verschoben + ' Projekt(e) in den neuen Projektordner verschoben.');

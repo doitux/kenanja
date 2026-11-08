@@ -119,12 +119,13 @@ def snippet_renderer_factory(tmp: Path, style, log=print):
     return render
 
 
-def export_all(song: Song, out_root, opts: ExportOptions | None = None,
-               log: Callable[[str], None] = print) -> dict:
+def export_all(song: Song, out_root=None, opts: ExportOptions | None = None,
+               log: Callable[[str], None] = print, folder=None) -> dict:
+    """Alles erzeugen. Ziel: `folder` direkt (z. B. <Projekt>/Export) oder `out_root`/<Titel (Autoren)>."""
     opts = opts or ExportOptions()
     style = opts.style or (str(STYLE) if STYLE.exists() else None)
     s = song.transposed() if song.transpose else song
-    folder = Path(out_root) / folder_name(song)
+    folder = Path(folder) if folder else Path(out_root) / folder_name(song)
     folder.mkdir(parents=True, exist_ok=True)
     base = folder / safe(song.title)
     files: dict[str, list] = {}

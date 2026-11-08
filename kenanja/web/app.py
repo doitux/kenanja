@@ -24,14 +24,23 @@ from ..voices import (CONGREGATION, VoiceProfile, ambitus_report, evaluate_shift
                       suggest_keys, suggest_swaps)
 
 STATIC = Path(__file__).resolve().parent / 'static'
-HOME = Path(os.environ.get('KENANJA_HOME', str(Path.home() / 'Kenanja')))
+HOME = Path(os.environ.get('KENANJA_HOME', str(Path.home() / 'Kenanja')))   # alter Standard (Version 0.1)
 from ..voices import config_dir as _config_dir  # noqa: E402
 SETTINGS_FILE = _config_dir() / 'einstellungen.json'
 OLD_SETTINGS_FILE = HOME / 'einstellungen.json'
 
+# Aufbau eines Projekts:  <Projektordner>/<Projektname>/
+#   projekt.json  song.kenanja.json  liedtext.txt
+#   Original/  (hochgeladenes Audio bzw. MuseScore-Datei)
+#   Analyse/   (Zwischenspeicher: getrennte Spuren)
+#   Export/    (alle erzeugten Blätter, Noten, MP3s)
+#   Vorschau/  (schnelle Vorschau-PDFs)
+SONG_FILE = 'song.kenanja.json'
+SUB = {'original': 'Original', 'analyse': 'Analyse', 'export': 'Export', 'vorschau': 'Vorschau'}
+
 DEFAULT_SETTINGS = {
-    'projektordner': str(HOME / 'Projekte'),
-    'ausgabe': str(HOME / 'Songs'),
+    'projektordner': str(Path.home() / 'Projekte' / 'Kenanja'),
+    'bandordner': '',            # optional: fertigen Export zusätzlich dorthin kopieren
     'band': 'S&L',
     'bitrate': '256',
     'spieler': [{'name': 'Violine', 'instrument': 'Violine', 'level': 'mittel'},
@@ -43,16 +52,28 @@ DEFAULT_SETTINGS = {
 app = FastAPI(title='Kenanja')
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 JOBS: dict[str, dict] = {}
+_LOCK = threading.Lock()
 
 
 def settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
     src = SETTINGS_FILE if SETTINGS_FILE.exists() else (OLD_SETTINGS_FILE if OLD_SETTINGS_FILE.exists() else None)
     if src:
-        s.update(json.loads(src.read_text(encoding='utf-8')))
+        saved = json.loads(src.read_text(encoding='utf-8'))
+        if 'ausgabe' in saved and 'bandordner' not in saved:   # Version 0.1: eigener Ausgabeordner → Band-Ordner
+            out = str(Path(saved['ausgabe']).expanduser())
+            saved['bandordner'] = '' if out == str(HOME / 'Songs') else out
+        if src == OLD_SETTINGS_FILE or str(Path(saved.get('projektordner', '')).expanduser()) == str(HOME / 'Projekte'):
+            saved.pop('projektordner', None)    # alter Standard → neuer Standard ~/Projekte/Kenanja
+        s.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
     if s.get('musescore'):
         os.environ['KENANJA_MUSESCORE'] = s['musescore']
     return s
+
+
+def save_settings(s: dict):
+    SETTINGS_FILE.write_text(json.dumps({k: s[k] for k in DEFAULT_SETTINGS if k in s}, ensure_ascii=False, indent=1),
+                             encoding='utf-8')
 
 
 def projects_dir() -> Path:
@@ -61,17 +82,100 @@ def projects_dir() -> Path:
     return d
 
 
+def safe_name(name: str) -> str:
+    n = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', ' ', name or '').strip().strip('.')
+    return re.sub(r'\s+', ' ', n)[:80] or 'Neuer Song'
+
+
+def unique_dir(name: str, base: Optional[Path] = None, keep: Optional[Path] = None) -> Path:
+    base = base or projects_dir()
+    cand = base / safe_name(name)
+    k = 2
+    while cand.exists() and cand != keep:
+        cand = base / f'{safe_name(name)} ({k})'
+        k += 1
+    return cand
+
+
 def pdir(pid: str) -> Path:
-    if not re.fullmatch(r'[\w-]+', pid):
-        raise HTTPException(400, 'Ungültige Projekt-ID')
+    if not pid or '/' in pid or '\\' in pid or pid.startswith('.'):
+        raise HTTPException(400, 'Ungültiger Projektname')
     d = projects_dir() / pid
-    if not d.exists():
+    if not (d / 'projekt.json').exists():
         raise HTTPException(404, 'Projekt nicht gefunden')
     return d
 
 
+def sub(pid_or_dir, key: str) -> Path:
+    d = pid_or_dir if isinstance(pid_or_dir, Path) else pdir(pid_or_dir)
+    p = d / SUB[key]
+    p.mkdir(exist_ok=True)
+    return p
+
+
 def load_song(pid: str) -> Song:
-    return Song.load(pdir(pid) / 'song.json')
+    d = pdir(pid)
+    song = Song.load(d / SONG_FILE)
+    if song.audio and not Path(song.audio).is_absolute():
+        song.audio = str(d / song.audio)
+    return song
+
+
+def save_song(pid: str, song: Song):
+    d = pdir(pid)
+    audio = song.audio
+    if audio:
+        try:
+            song.audio = str(Path(audio).resolve().relative_to(d.resolve()))
+        except ValueError:
+            pass
+    song.save(d / SONG_FILE)
+    song.audio = audio
+
+
+def migrate_projects():
+    """Projekte aus Version 0.1 (Zeitstempel-Ordner, alter Standardordner) ins neue Schema bringen."""
+    base = projects_dir()
+    old_base = HOME / 'Projekte'
+    sources = [base]
+    if old_base.exists() and old_base.resolve() != base.resolve():
+        sources.append(old_base)
+    for src in sources:
+        for d in list(src.iterdir()):
+            meta_f = d / 'projekt.json'
+            if not d.is_dir() or not meta_f.exists():
+                continue
+            if JOBS.get(d.name, {}).get('status') == 'analyse':
+                continue
+            meta = json.loads(meta_f.read_text(encoding='utf-8'))
+            if (d / 'song.json').exists() and not (d / SONG_FILE).exists():
+                (d / 'song.json').rename(d / SONG_FILE)
+            for old, new in (('.analyse', 'Analyse'), ('vorschau', 'Vorschau')):
+                if (d / old).exists() and not (d / new).exists():
+                    (d / old).rename(d / new)
+            for f in list(d.iterdir()):   # importierte Noten ebenfalls nach Original/
+                if f.is_file() and f.suffix.lower() in ('.mscz', '.mscx') and f.name != meta.get('audio'):
+                    (d / 'Original').mkdir(exist_ok=True)
+                    f.rename(d / 'Original' / f.name)
+            a = meta.get('audio')
+            if a and (d / a).exists() and '/' not in a:
+                (d / 'Original').mkdir(exist_ok=True)
+                (d / a).rename(d / 'Original' / a)
+                meta['audio'] = f'Original/{a}'
+                if (d / SONG_FILE).exists():
+                    sj = json.loads((d / SONG_FILE).read_text(encoding='utf-8'))
+                    sj['audio'] = meta['audio']
+                    (d / SONG_FILE).write_text(json.dumps(sj, ensure_ascii=False, indent=1), encoding='utf-8')
+            meta_f.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
+            if src != base or re.fullmatch(r'\d{8}-\d{6}-[0-9a-f]{4}', d.name):
+                target = unique_dir(meta.get('titel') or d.name, base)
+                shutil.move(str(d), str(target))
+        if src != base:
+            for leer in (src, HOME):   # leere Ordner der alten Version aufräumen
+                try:
+                    leer.rmdir()
+                except OSError:
+                    pass
 
 
 def song_payload(song: Song) -> dict:
@@ -119,10 +223,6 @@ def _parse_cells(text: str, bar) -> list[ChordEvent]:
     return out
 
 
-def save_song(pid: str, song: Song):
-    song.save(pdir(pid) / 'song.json')
-
-
 # ------------------------------------------------------------------ Seiten ----
 
 @app.get('/', response_class=HTMLResponse)
@@ -144,28 +244,29 @@ def get_settings():
 def put_settings(data: dict):
     s = settings()
     old_proj = Path(s['projektordner']).expanduser()
-    for k in ('projektordner', 'ausgabe'):
+    for k in ('projektordner', 'bandordner'):
         if data.get(k):
             data[k] = str(Path(data[k]).expanduser())
     s.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
     new_proj = Path(s['projektordner'])
     moved = 0
     if new_proj.resolve() != old_proj.resolve():
+        if any(j.get('status') in ('analyse', 'läuft') for j in JOBS.values()):
+            raise HTTPException(409, 'Gerade läuft eine Analyse oder ein Export – bitte kurz warten.')
         try:
             new_proj.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise HTTPException(400, f'Projektordner kann nicht angelegt werden: {e}')
-        # vorhandene Projekte mitnehmen (nur, was im neuen Ordner noch nicht existiert)
-        if old_proj.exists() and not any(j.get('status') == 'analyse' for j in JOBS.values()):
+        if old_proj.exists():
             for d in old_proj.iterdir():
-                if (d / 'projekt.json').exists() and not (new_proj / d.name).exists():
-                    shutil.move(str(d), str(new_proj / d.name))
+                if (d / 'projekt.json').exists():
+                    shutil.move(str(d), str(unique_dir(d.name, new_proj)))
                     moved += 1
             try:
                 old_proj.rmdir()
             except OSError:
                 pass
-    SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding='utf-8')
+    save_settings(s)
     return {**s, 'verschoben': moved}
 
 
@@ -173,6 +274,8 @@ def put_settings(data: dict):
 
 @app.get('/api/projekte')
 def list_projects():
+    with _LOCK:
+        migrate_projects()
     out = []
     for d in sorted(projects_dir().iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         meta = d / 'projekt.json'
@@ -186,6 +289,7 @@ def list_projects():
 
 def _write_meta(pid, **kw):
     d = projects_dir() / pid
+    d.mkdir(parents=True, exist_ok=True)
     meta = d / 'projekt.json'
     m = json.loads(meta.read_text(encoding='utf-8')) if meta.exists() else {}
     m.update(kw)
@@ -199,11 +303,11 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
         def prog(name, frac):
             job.update(schritt=name, fortschritt=round(frac, 3))
         # Zwischenspeicher (getrennte Spuren) im Projekt – wird mit dem Projekt gelöscht
-        res = build_song(audio, text or None, title=title, authors=authors, progress=prog,
-                         cache=audio.parent / '.analyse')
+        d = projects_dir() / pid
+        res = build_song(audio, text or None, title=title, authors=authors, progress=prog, cache=sub(d, 'analyse'))
         song = res.song
         song.audio = str(audio)
-        old = projects_dir() / pid / 'song.json'
+        old = d / SONG_FILE
         if old.exists():  # bei erneuter Analyse Ablauf/Besetzung behalten, soweit möglich
             try:
                 prev = Song.load(old)
@@ -223,16 +327,18 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
 @app.post('/api/projekte')
 async def new_project(audio: UploadFile = File(...), titel: str = Form(''), autoren: str = Form(''),
                       text: str = Form('')):
-    pid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
-    d = projects_dir() / pid
-    d.mkdir(parents=True)
     name = re.sub(r'[^\w.\- ]+', '_', audio.filename or 'audio.mp3')
-    dest = d / name
+    title = titel.strip() or Path(name).stem.replace('_', ' ')
+    with _LOCK:
+        d = unique_dir(title)
+        d.mkdir(parents=True)
+    pid = d.name
+    dest = sub(d, 'original') / name
     with dest.open('wb') as f:
         shutil.copyfileobj(audio.file, f)
     (d / 'liedtext.txt').write_text(text, encoding='utf-8')
-    title = titel or Path(name).stem
-    _write_meta(pid, titel=title, autoren=autoren, audio=name, status='analyse', erstellt=time.time())
+    _write_meta(pid, titel=title, autoren=autoren, audio=f"{SUB['original']}/{name}", status='analyse',
+                erstellt=time.time())
     JOBS[pid] = {'status': 'analyse', 'fortschritt': 0.0, 'schritt': 'Start'}
     threading.Thread(target=_run_analysis, args=(pid, dest, text, title, autoren), daemon=True).start()
     return {'id': pid}
@@ -241,18 +347,21 @@ async def new_project(audio: UploadFile = File(...), titel: str = Form(''), auto
 @app.post('/api/projekte/import')
 async def import_project(datei: UploadFile = File(...)):
     from ..importers.musescore import import_musescore
-    pid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
-    d = projects_dir() / pid
-    d.mkdir(parents=True)
-    dest = d / re.sub(r'[^\w.\- ]+', '_', datei.filename or 'partitur.mscz')
-    with dest.open('wb') as f:
+    import tempfile
+    fname = re.sub(r'[^\w.\- ]+', '_', datei.filename or 'partitur.mscz')
+    tmp = Path(tempfile.mkdtemp(prefix='kenanja_imp_')) / fname
+    with tmp.open('wb') as f:
         shutil.copyfileobj(datei.file, f)
-    if dest.suffix.lower() == '.json':
-        song = Song.load(dest)
-    else:
-        song = import_musescore(dest)
-    save_song(pid, song)
+    song = Song.load(tmp) if tmp.suffix.lower() == '.json' else import_musescore(tmp)
+    with _LOCK:
+        d = unique_dir(song.title or tmp.stem)
+        d.mkdir(parents=True)
+    pid = d.name
+    shutil.move(str(tmp), str(sub(d, 'original') / fname))
+    shutil.rmtree(tmp.parent, ignore_errors=True)
+    song.notes['source'] = f"{SUB['original']}/{fname}"
     _write_meta(pid, titel=song.title, autoren=song.authors, status='fertig', erstellt=time.time())
+    save_song(pid, song)
     return {'id': pid}
 
 
@@ -274,8 +383,8 @@ def get_project(pid: str):
     d = pdir(pid)
     meta = json.loads((d / 'projekt.json').read_text(encoding='utf-8'))
     job = JOBS.get(pid)
-    out = {'id': pid, 'meta': meta, 'job': job}
-    if (d / 'song.json').exists() and (not job or job.get('status') != 'analyse'):
+    out = {'id': pid, 'meta': meta, 'job': job, 'pfad': str(d)}
+    if (d / SONG_FILE).exists() and (not job or job.get('status') != 'analyse'):
         song = load_song(pid)
         out['song'] = song_payload(song)
     lt = d / 'liedtext.txt'
@@ -333,7 +442,25 @@ def put_song(pid: str, data: dict):
                         LY.apply_text(song.sections, idx, sd['text'])
     save_song(pid, song)
     _write_meta(pid, titel=song.title, autoren=song.authors)
-    return song_payload(song)
+    new_id = _rename_project(pid, song.title)
+    return {**song_payload(song), 'id': new_id}
+
+
+def _rename_project(pid: str, title: str) -> str:
+    """Projektordner heißt wie der Song – bei Titeländerung mit umbenennen (nicht während Analyse/Export)."""
+    if not title or safe_name(title) == re.sub(r' \(\d+\)$', '', pid):
+        return pid
+    if any(k.split(':')[0] == pid and j.get('status') in ('analyse', 'läuft') for k, j in JOBS.items()):
+        return pid
+    with _LOCK:
+        d = pdir(pid)
+        target = unique_dir(title, keep=d)
+        if target == d:
+            return pid
+        d.rename(target)
+        for k in [k for k in JOBS if k.split(':')[0] == pid]:
+            JOBS[target.name + k[len(pid):]] = JOBS.pop(k)
+    return target.name
 
 
 @app.post('/api/projekte/{pid}/abschnitt-kopieren/{sid}')
@@ -356,13 +483,12 @@ def copy_section(pid: str, sid: str):
 # ------------------------------------------------------------------ Vorschau ----
 
 @app.get('/api/projekte/{pid}/vorschau/{art}')
-def preview(pid: str, art: str):
+def preview(pid: str, art: str, oeffnen: int = 0):
     from ..sheets.chordsheet import build_chord_sheet
     from ..sheets.choirsheet import build_choir_sheet
     from ..sheets.instrument_sheets import build_guitar_sheet
     song = load_song(pid)
-    d = pdir(pid) / 'vorschau'
-    d.mkdir(exist_ok=True)
+    d = sub(pid, 'vorschau')
     if art == 'chordsheet':
         _, pdf = build_chord_sheet(song, d / 'Chordsheet.odt')
     elif art == 'chortext':
@@ -374,6 +500,8 @@ def preview(pid: str, art: str):
         raise HTTPException(404)
     if not pdf:
         raise HTTPException(500, 'PDF konnte nicht erzeugt werden – ist LibreOffice installiert?')
+    if oeffnen:   # im eigenen Fenster: im PDF-Betrachter (Okular …) öffnen
+        return open_path({'pfad': str(pdf)})
     return FileResponse(pdf, media_type='application/pdf', headers={'Cache-Control': 'no-store'})
 
 
@@ -442,7 +570,17 @@ def _run_export(pid: str, opts_d: dict):
         def lg(m):
             log.append(m)
             job['log'] = log[-12:]
-        res = export_all(song, opts_d.get('ausgabe') or st['ausgabe'], opts, log=lg)
+        res = export_all(song, opts=opts, log=lg, folder=sub(pid, 'export'))
+        band = (opts_d.get('bandordner') if 'bandordner' in opts_d else st.get('bandordner')) or ''
+        if band:   # zusätzlich in den Band-Ordner (z. B. Nextcloud) kopieren
+            from ..export import folder_name
+            try:
+                dst = Path(band).expanduser() / folder_name(song)
+                shutil.copytree(res['ordner'], dst, dirs_exist_ok=True)
+                res['kopie'] = str(dst)
+                lg(f'Kopie in {dst}')
+            except OSError as e:
+                res.setdefault('fehler', []).append(f'Kopie in den Band-Ordner: {e}')
         job.update(status='fertig', ergebnis=res)
     except Exception as e:
         traceback.print_exc()
@@ -462,20 +600,83 @@ def export_status(pid: str):
     return JOBS.get(pid + ':export', {'status': 'keiner'})
 
 
+def _allowed(pfad: str) -> Path:
+    p = Path(pfad).expanduser().resolve()
+    st = settings()
+    roots = [Path(st[k]).expanduser().resolve() for k in ('projektordner', 'bandordner') if st.get(k)]
+    if not any(p == r or r in p.parents for r in roots) or not p.exists():
+        raise HTTPException(403, 'Nicht erlaubt')
+    return p
+
+
 @app.get('/api/datei')
 def get_file(pfad: str):
-    p = Path(pfad).resolve()
-    st = settings()
-    allowed = [Path(st['ausgabe']).expanduser().resolve(), Path(st['projektordner']).expanduser().resolve()]
-    if not any(str(p).startswith(str(a)) for a in allowed) or not p.exists():
-        raise HTTPException(403, 'Nicht erlaubt')
+    p = _allowed(pfad)
     return FileResponse(p, filename=p.name)
 
 
-def main(host='127.0.0.1', port=8765, open_browser=True):
+@app.post('/api/oeffnen')
+def open_path(data: dict):
+    """Datei oder Ordner mit dem passenden Programm öffnen (LibreOffice, MuseScore, Dolphin …)."""
+    import subprocess
+    p = _allowed(data.get('pfad', ''))
+    opener = shutil.which('xdg-open') or shutil.which('kde-open') or shutil.which('gio')
+    if not opener:
+        raise HTTPException(500, 'xdg-open nicht gefunden')
+    args = [opener, 'open', str(p)] if opener.endswith('gio') else [opener, str(p)]
+    env = {k: v for k, v in os.environ.items() if k not in ('QT_QPA_PLATFORM', 'LD_LIBRARY_PATH', 'QTWEBENGINE_CHROMIUM_FLAGS')}
+    subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return {'ok': True}
+
+
+@app.get('/api/projekte/{pid}/ordner')
+def project_folder(pid: str, art: str = ''):
+    d = pdir(pid)
+    return {'pfad': str(sub(d, art) if art in SUB else d)}
+
+
+QWEBCHANNEL_JS: bytes = b''
+
+
+@app.get('/qwebchannel.js')
+def qwebchannel():
+    from fastapi.responses import Response
+    return Response(QWEBCHANNEL_JS or b'/* kein Kenanja-Fenster */', media_type='application/javascript')
+
+
+def start_server(host='127.0.0.1', port=0):
+    """Server im Hintergrund starten; gibt die URL zurück (Port 0 = einen freien wählen)."""
+    import socket
     import uvicorn
     projects_dir()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        sock.bind((host, 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level='warning'))
+    threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True).start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    return server, f'http://{host}:{port}'
+
+
+def busy_jobs() -> list[str]:
+    return [k.split(':')[0] for k, j in JOBS.items() if j.get('status') in ('analyse', 'läuft')]
+
+
+def main(host='127.0.0.1', port=8765, open_browser=True):
+    import webbrowser
+    server, url = start_server(host, port)
+    print(f'Kenanja läuft unter {url} – beenden mit Strg+C', flush=True)
     if open_browser:
-        import webbrowser
-        threading.Timer(1.2, lambda: webbrowser.open(f'http://{host}:{port}')).start()
-    uvicorn.run(app, host=host, port=port, log_level='warning')
+        webbrowser.open(url)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        server.should_exit = True

@@ -1,6 +1,7 @@
 """Kenanja auf der Kommandozeile.
 
-  kenanja                     Oberfläche im Browser starten
+  kenanja                     Kenanja im eigenen Fenster starten
+  kenanja web                 Oberfläche stattdessen im Browser
   kenanja analyse SONG.mp3 [--text liedtext.txt] [--titel …] [--autoren …] [-o song.kenanja.json]
   kenanja import LEADSHEET.mscz [-o song.kenanja.json]
   kenanja tonart song.kenanja.json
@@ -19,7 +20,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog='kenanja', description='Kenanja – aus einem MP3 Chord-Sheet, Leadsheet, '
                                  'Streicherstimmen, Chorblatt und Übe-Audio für deine Band machen.')
     sub = ap.add_subparsers(dest='cmd')
-    w = sub.add_parser('web', help='Oberfläche starten (Standard)')
+    fe = sub.add_parser('fenster', help='im eigenen Fenster starten (Standard)')
+    fe.add_argument('--port', type=int, default=0)
+    w = sub.add_parser('web', help='Oberfläche im normalen Browser starten')
     w.add_argument('--port', type=int, default=8765)
     w.add_argument('--kein-browser', action='store_true')
     a = sub.add_parser('analyse', help='Audio analysieren')
@@ -35,7 +38,7 @@ def main(argv=None):
     t.add_argument('song')
     e = sub.add_parser('erzeugen', help='alle Blätter, Noten und Übe-Audio erzeugen')
     e.add_argument('song')
-    e.add_argument('-o', '--out', default=str(Path.home() / 'Kenanja' / 'Songs'))
+    e.add_argument('-o', '--out', help='Zielordner (Standard: „Export“ neben der Song-Datei)')
     e.add_argument('--transponieren', type=int)
     e.add_argument('--bitrate', default='256')
     e.add_argument('--band', default='')
@@ -44,9 +47,12 @@ def main(argv=None):
     sub.add_parser('pruefen', help='Installation prüfen')
     args = ap.parse_args(argv)
 
-    if args.cmd in (None, 'web'):
+    if args.cmd in (None, 'fenster'):
+        from .fenster import main as fenster
+        sys.exit(fenster(port=getattr(args, 'port', 0)))
+    if args.cmd == 'web':
         from .web.app import main as web
-        web(port=getattr(args, 'port', 8765), open_browser=not getattr(args, 'kein_browser', False))
+        web(port=args.port, open_browser=not args.kein_browser)
         return
     if args.cmd == 'analyse':
         from .audio.analysis import build_song
@@ -75,8 +81,9 @@ def main(argv=None):
         s = Song.load(args.song)
         if args.transponieren is not None:
             s.transpose = args.transponieren
-        res = export_all(s, args.out, ExportOptions(bitrate=args.bitrate, band=args.band,
-                                                    harmony_voices=args.nebenstimmen, satb=args.satb))
+        res = export_all(s, opts=ExportOptions(bitrate=args.bitrate, band=args.band,
+                                               harmony_voices=args.nebenstimmen, satb=args.satb),
+                         folder=args.out or Path(args.song).resolve().parent / 'Export')
         print(json.dumps(res, ensure_ascii=False, indent=1))
     elif args.cmd == 'pruefen':
         check()
