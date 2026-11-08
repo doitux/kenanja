@@ -316,8 +316,11 @@ async function pollExport() {
 async function showSettings() {
   SETTINGS = await api('/api/einstellungen'); const g = SETTINGS.gefunden;
   app.innerHTML = `<div class="card"><h1>Einstellungen</h1>
-   <div class="grid2"><div><label>Ausgabeordner</label><input type="text" id="e_out" value="${esc(SETTINGS.ausgabe)}"></div>
-   <div><label>Bandname</label><input type="text" id="e_band" value="${esc(SETTINGS.band)}"></div></div>
+   <div class="grid2"><div><label>Projektordner (Audio, Analysen, Bearbeitungsstand)</label><input type="text" id="e_proj" value="${esc(SETTINGS.projektordner)}">
+     <div class="muted small">Z. B. auf einer anderen Platte: /media/daten/Kenanja. Vorhandene Projekte werden beim Speichern dorthin verschoben.</div></div>
+   <div><label>Ausgabeordner (fertige Blätter, Noten, MP3s)</label><input type="text" id="e_out" value="${esc(SETTINGS.ausgabe)}">
+     <div class="muted small">Z. B. dein Bandordner: ~/Band/Fertig/Songs</div></div></div>
+   <div class="grid2"><div><label>Bandname</label><input type="text" id="e_band" value="${esc(SETTINGS.band)}"></div><div></div></div>
    <label>Band-Besetzung (Kürzel, mit Komma getrennt)</label><input type="text" id="e_inst" value="${esc((SETTINGS.besetzung || []).join(', '))}">
    <label>MuseScore-Programm (leer = automatisch suchen)</label><input type="text" id="e_ms" value="${esc(SETTINGS.musescore)}" placeholder="${esc(g.musescore)}">
    <p class="small">Gefunden: MuseScore: <b>${esc(g.musescore || 'nicht gefunden')}</b> · LibreOffice: <b>${esc(g.libreoffice || 'nicht gefunden')}</b> ·
@@ -325,8 +328,12 @@ async function showSettings() {
    <button class="primary" onclick="saveSettings()">Speichern</button></div>`;
 }
 async function saveSettings() {
-  SETTINGS = await api('/api/einstellungen', {method: 'PUT', body: {ausgabe: $('#e_out').value, band: $('#e_band').value, musescore: $('#e_ms').value,
-    besetzung: $('#e_inst').value.split(',').map(s => s.trim()).filter(Boolean)}});
+  let r;
+  try {
+    r = await api('/api/einstellungen', {method: 'PUT', body: {projektordner: $('#e_proj').value, ausgabe: $('#e_out').value, band: $('#e_band').value,
+      musescore: $('#e_ms').value, besetzung: $('#e_inst').value.split(',').map(s => s.trim()).filter(Boolean)}});
+  } catch (e) { return alert(e.message); }
+  if (r.verschoben) alert(r.verschoben + ' Projekt(e) in den neuen Projektordner verschoben.');
   showSettings();
 }
 showHome();

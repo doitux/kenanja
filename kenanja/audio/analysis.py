@@ -43,17 +43,20 @@ def file_hash(path) -> str:
     return h.hexdigest()[:16]
 
 
-def work_dir(path) -> Path:
-    from .btc import cache_dir
-    d = cache_dir().parent / 'analyse' / file_hash(path)
+def work_dir(path, base=None) -> Path:
+    """Zwischenspeicher für die Analyse eines Audios (Standard: ~/.cache/kenanja/analyse/<hash>)."""
+    if base is None:
+        from .btc import cache_dir
+        base = cache_dir().parent / 'analyse'
+    d = Path(base) / file_hash(path)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def stems(path, progress=None) -> tuple[np.ndarray, np.ndarray]:
+def stems(path, progress=None, cache=None) -> tuple[np.ndarray, np.ndarray]:
     """Gesang/Begleitung (zwischengespeichert als FLAC)."""
     import soundfile as sf
-    wd = work_dir(path)
+    wd = work_dir(path, cache)
     v, i = wd / 'gesang.flac', wd / 'begleitung.flac'
     if v.exists() and i.exists():
         return sf.read(v, dtype='float32')[0].T, sf.read(i, dtype='float32')[0].T
@@ -790,7 +793,7 @@ def _label_counter(labels):
 
 
 def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors: str = '',
-               progress=None, use_asr: bool = True) -> AnalysisResult:
+               progress=None, use_asr: bool = True, cache=None) -> AnalysisResult:
     import librosa
     rep = {}
 
@@ -801,7 +804,8 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     step('Audio laden', 0.02)
     mix22 = load_audio(path, 22050, mono=True)
     step('Gesang und Begleitung trennen', 0.05)
-    voc, inst = stems(path, (lambda f: progress('Gesang und Begleitung trennen', 0.05 + 0.45 * f)) if progress else None)
+    voc, inst = stems(path, (lambda f: progress('Gesang und Begleitung trennen', 0.05 + 0.45 * f)) if progress else None,
+                      cache)
     voc22 = librosa.resample(voc.mean(0), orig_sr=SR, target_sr=22050)
     inst22 = librosa.resample(inst.mean(0), orig_sr=SR, target_sr=22050)
     step('Takt und Tempo', 0.52)

@@ -25,10 +25,12 @@ from ..voices import (CONGREGATION, VoiceProfile, ambitus_report, evaluate_shift
 
 STATIC = Path(__file__).resolve().parent / 'static'
 HOME = Path(os.environ.get('KENANJA_HOME', str(Path.home() / 'Kenanja')))
-PROJECTS = HOME / 'Projekte'
-SETTINGS_FILE = HOME / 'einstellungen.json'
+from ..voices import config_dir as _config_dir  # noqa: E402
+SETTINGS_FILE = _config_dir() / 'einstellungen.json'
+OLD_SETTINGS_FILE = HOME / 'einstellungen.json'
 
 DEFAULT_SETTINGS = {
+    'projektordner': str(HOME / 'Projekte'),
     'ausgabe': str(HOME / 'Songs'),
     'band': 'S&L',
     'bitrate': '256',
@@ -45,17 +47,24 @@ JOBS: dict[str, dict] = {}
 
 def settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
-    if SETTINGS_FILE.exists():
-        s.update(json.loads(SETTINGS_FILE.read_text(encoding='utf-8')))
+    src = SETTINGS_FILE if SETTINGS_FILE.exists() else (OLD_SETTINGS_FILE if OLD_SETTINGS_FILE.exists() else None)
+    if src:
+        s.update(json.loads(src.read_text(encoding='utf-8')))
     if s.get('musescore'):
         os.environ['KENANJA_MUSESCORE'] = s['musescore']
     return s
 
 
+def projects_dir() -> Path:
+    d = Path(settings()['projektordner']).expanduser()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def pdir(pid: str) -> Path:
     if not re.fullmatch(r'[\w-]+', pid):
         raise HTTPException(400, 'Ungültige Projekt-ID')
-    d = PROJECTS / pid
+    d = projects_dir() / pid
     if not d.exists():
         raise HTTPException(404, 'Projekt nicht gefunden')
     return d
@@ -134,19 +143,38 @@ def get_settings():
 @app.put('/api/einstellungen')
 def put_settings(data: dict):
     s = settings()
+    old_proj = Path(s['projektordner']).expanduser()
+    for k in ('projektordner', 'ausgabe'):
+        if data.get(k):
+            data[k] = str(Path(data[k]).expanduser())
     s.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
-    HOME.mkdir(parents=True, exist_ok=True)
+    new_proj = Path(s['projektordner'])
+    moved = 0
+    if new_proj.resolve() != old_proj.resolve():
+        try:
+            new_proj.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise HTTPException(400, f'Projektordner kann nicht angelegt werden: {e}')
+        # vorhandene Projekte mitnehmen (nur, was im neuen Ordner noch nicht existiert)
+        if old_proj.exists() and not any(j.get('status') == 'analyse' for j in JOBS.values()):
+            for d in old_proj.iterdir():
+                if (d / 'projekt.json').exists() and not (new_proj / d.name).exists():
+                    shutil.move(str(d), str(new_proj / d.name))
+                    moved += 1
+            try:
+                old_proj.rmdir()
+            except OSError:
+                pass
     SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding='utf-8')
-    return s
+    return {**s, 'verschoben': moved}
 
 
 # ------------------------------------------------------------------ Projekte ----
 
 @app.get('/api/projekte')
 def list_projects():
-    PROJECTS.mkdir(parents=True, exist_ok=True)
     out = []
-    for d in sorted(PROJECTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+    for d in sorted(projects_dir().iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         meta = d / 'projekt.json'
         if meta.exists():
             m = json.loads(meta.read_text(encoding='utf-8'))
@@ -157,7 +185,7 @@ def list_projects():
 
 
 def _write_meta(pid, **kw):
-    d = PROJECTS / pid
+    d = projects_dir() / pid
     meta = d / 'projekt.json'
     m = json.loads(meta.read_text(encoding='utf-8')) if meta.exists() else {}
     m.update(kw)
@@ -170,10 +198,12 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
     try:
         def prog(name, frac):
             job.update(schritt=name, fortschritt=round(frac, 3))
-        res = build_song(audio, text or None, title=title, authors=authors, progress=prog)
+        # Zwischenspeicher (getrennte Spuren) im Projekt – wird mit dem Projekt gelöscht
+        res = build_song(audio, text or None, title=title, authors=authors, progress=prog,
+                         cache=audio.parent / '.analyse')
         song = res.song
         song.audio = str(audio)
-        old = PROJECTS / pid / 'song.json'
+        old = projects_dir() / pid / 'song.json'
         if old.exists():  # bei erneuter Analyse Ablauf/Besetzung behalten, soweit möglich
             try:
                 prev = Song.load(old)
@@ -194,7 +224,7 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
 async def new_project(audio: UploadFile = File(...), titel: str = Form(''), autoren: str = Form(''),
                       text: str = Form('')):
     pid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
-    d = PROJECTS / pid
+    d = projects_dir() / pid
     d.mkdir(parents=True)
     name = re.sub(r'[^\w.\- ]+', '_', audio.filename or 'audio.mp3')
     dest = d / name
@@ -212,7 +242,7 @@ async def new_project(audio: UploadFile = File(...), titel: str = Form(''), auto
 async def import_project(datei: UploadFile = File(...)):
     from ..importers.musescore import import_musescore
     pid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
-    d = PROJECTS / pid
+    d = projects_dir() / pid
     d.mkdir(parents=True)
     dest = d / re.sub(r'[^\w.\- ]+', '_', datei.filename or 'partitur.mscz')
     with dest.open('wb') as f:
@@ -435,7 +465,8 @@ def export_status(pid: str):
 @app.get('/api/datei')
 def get_file(pfad: str):
     p = Path(pfad).resolve()
-    allowed = [Path(settings()['ausgabe']).resolve(), HOME.resolve()]
+    st = settings()
+    allowed = [Path(st['ausgabe']).expanduser().resolve(), Path(st['projektordner']).expanduser().resolve()]
     if not any(str(p).startswith(str(a)) for a in allowed) or not p.exists():
         raise HTTPException(403, 'Nicht erlaubt')
     return FileResponse(p, filename=p.name)
@@ -443,9 +474,7 @@ def get_file(pfad: str):
 
 def main(host='127.0.0.1', port=8765, open_browser=True):
     import uvicorn
-    HOME.mkdir(parents=True, exist_ok=True)
-    PROJECTS.mkdir(parents=True, exist_ok=True)
-    settings()
+    projects_dir()
     if open_browser:
         import webbrowser
         threading.Timer(1.2, lambda: webbrowser.open(f'http://{host}:{port}')).start()
