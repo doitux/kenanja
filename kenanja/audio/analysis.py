@@ -398,30 +398,113 @@ class TextBlock:
     lines: list[str]
 
 
-def parse_lyrics(text: str) -> list[TextBlock]:
-    """Eingefügten Liedtext in Blöcke zerlegen (Leerzeilen bzw. Überschriften wie '[Chorus]', 'Refrain:')."""
-    blocks, cur = [], TextBlock(None, [])
+def split_by_repetition(lines: list[str], min_len: int = 4) -> list[TextBlock]:
+    """Zerlegt einen durchgehenden Liedtext anhand wiederkehrender Zeilengruppen in Blöcke."""
+    norm = [re.sub(r'\W+', ' ', l.lower()).strip() for l in lines]
+    n = len(norm)
+    # Anfang einer wiederholten Passage: Zeile kommt mehrfach vor, aber mit unterschiedlicher Vorgängerzeile
+    heads = set()
+    for v in set(norm):
+        pos = [i for i, x in enumerate(norm) if x == v]
+        if len(pos) < 2:
+            continue
+        prev = {norm[p - 1] if p else None for p in pos}
+        if len(prev) > 1:
+            heads.add(v)
+    cuts = [0]
+    for i in range(1, n):
+        if norm[i] in heads and norm[i] != norm[i - 1] and i - cuts[-1] >= min_len:
+            cuts.append(i)
+    blocks = []
+    for k, a in enumerate(cuts):
+        b = cuts[k + 1] if k + 1 < len(cuts) else n
+        blocks.append(TextBlock(None, lines[a:b]))
+    # Block, der als Ganzes am häufigsten vorkommt, aber nicht der erste ist -> Refrain
+    return blocks
+
+
+JUNK = re.compile(r'(https?://|\]\(|^you might also like|^\d+\s*contributors|embed$|^translations|^see .* live|'
+                  r'^get tickets|lyrics$|^\[?songtext|^\*+$)', re.I)
+CUE = re.compile(r'^\(\s*([^()]{2,40})\s*\)$')
+
+
+def clean_lyrics_text(text: str) -> str:
+    """Kopierten Liedtext säubern (Links, Werbung, „You might also like“ …)."""
+    out = []
     for raw in text.splitlines():
+        line = raw.strip()
+        if line and JUNK.search(line):
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+
+def parse_lyrics(text: str) -> list[TextBlock]:
+    """Eingefügten Liedtext in Blöcke zerlegen (Leerzeilen bzw. Überschriften wie '[Chorus]', 'Refrain:').
+    Zeilen wie '(Ladies)' / '(Men)' werden als Sänger-Hinweis gemerkt, '(x2)' wiederholt die Zeile."""
+    blocks, cur = [], TextBlock(None, [])
+    cur.cues = []
+    for raw in clean_lyrics_text(text).splitlines():
         line = raw.strip()
         m = SECTION_HEAD.match(line)
         if m:
             if cur.lines or cur.label:
                 blocks.append(cur)
             cur = TextBlock(line.strip('[]():').strip(), [])
+            cur.cues = []
             continue
         if not line:
             if cur.lines:
                 blocks.append(cur)
                 cur = TextBlock(None, [])
+                cur.cues = []
             continue
-        cur.lines.append(line)
-    if cur.lines:
+        c = CUE.match(line)
+        if c:
+            cur.cues.append((len(cur.lines), c.group(1)))
+            continue
+        rep = re.search(r'\(?\s*[x×]\s*(\d)\s*\)?$|\(\s*(\d)\s*[x×]\s*\)$', line, re.I)
+        times = 1
+        if rep:
+            times = int(rep.group(1) or rep.group(2))
+            line = line[:rep.start()].strip()
+        line = re.sub(r'\s*\([^)]*\)\s*$', '', line).strip() or line   # Echo/Backing in Klammern weg
+        cur.lines += [line] * times
+    if cur.lines or cur.label:
         blocks.append(cur)
-    # gleiche Blöcke ohne Überschrift: wiederholter Block = Refrain
-    norm = [' '.join(b.lines).lower() for b in blocks]
-    for i, b in enumerate(blocks):
-        if not b.label:
-            b.label = 'Chorus' if norm.count(norm[i]) > 1 else 'Verse'
+    # Überschrift ohne eigenen Text (z. B. zweites [Chorus]): Text des gleichnamigen Blocks übernehmen
+    for k, b in enumerate(blocks):
+        if not b.lines and b.label:
+            src = next((x for x in blocks[:k] if x.label and x.label.lower() == b.label.lower() and x.lines), None)
+            if src:
+                b.lines = list(src.lines)
+    blocks = [b for b in blocks if b.lines]
+    # Text ohne Leerzeilen/Überschriften: an Wiederholungen in Strophe/Refrain zerlegen
+    if len(blocks) == 1 and not blocks[0].label and len(blocks[0].lines) > 12:
+        blocks = split_by_repetition(blocks[0].lines)
+    # Blöcke ohne Überschrift: nach Ähnlichkeit gruppieren – erste Gruppe Verse, zweite Chorus, Rest Bridge/Tag
+    def key(b):
+        return [re.sub(r'\W+', ' ', l.lower()).strip() for l in b.lines]
+    groups = []
+    for b in blocks:
+        if b.label:
+            continue
+        kb = key(b)
+        for g in groups:
+            kg = key(g[0])
+            n = min(len(kb), len(kg), 4)
+            if kb[:n] == kg[:n]:
+                g.append(b)
+                break
+        else:
+            groups.append([b])
+    names = ['Verse', 'Chorus', 'Bridge', 'Tag']
+    for gi, g in enumerate(groups):
+        for b in g:
+            b.label = names[min(gi, len(names) - 1)]
+    for b in blocks:
+        if not hasattr(b, 'cues'):
+            b.cues = []
     return blocks
 
 
@@ -666,6 +749,29 @@ class AnalysisResult:
     report: dict = field(default_factory=dict)
 
 
+def _fix_octaves(notes: list[VNote]) -> None:
+    """Melodie in eine Lage bringen: Phrasen von Männer- und Frauenstimmen auf dieselbe Oktave,
+    einzelne Ausreißer (Oktavfehler der Tonhöhenerkennung) korrigieren."""
+    if len(notes) < 8:
+        return
+    target = float(np.median([n.pitch for n in notes]))
+    for a, b in phrases(notes):
+        pm = float(np.median([n.pitch for n in notes[a:b]]))
+        sh = int(round((target - pm) / 12)) * 12
+        if sh:
+            for n in notes[a:b]:
+                n.pitch += sh
+    for k in range(len(notes)):
+        nb = [notes[j].pitch for j in range(max(0, k - 3), min(len(notes), k + 4)) if j != k]
+        if not nb:
+            continue
+        med = float(np.median(nb))
+        while notes[k].pitch - med > 9:
+            notes[k].pitch -= 12
+        while med - notes[k].pitch > 9:
+            notes[k].pitch += 12
+
+
 def _norm_octave(notes: list[VNote]) -> int:
     if not notes:
         return 0
@@ -703,7 +809,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     step('Akkorde', 0.58)
     probs, fps = chord_probs(mix22)
     bass = bass_per_beat(inst22, beats)
-    bc = beat_chords_with_bass(probs, fps, beats, bass)
+    bc = beat_chords_with_bass(probs, fps, beats, bass, switch_penalty=3.0)
     from .btc import label
     labels = [label(i) for i in bc]
     key_tpc, minor = estimate_key(labels)
@@ -719,6 +825,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     octv = _norm_octave(vnotes)
     for n in vnotes:
         n.pitch += octv
+    _fix_octaves(vnotes)
     rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
 
     # Text
@@ -807,9 +914,9 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 seg_sym[x] = sym
             k = grp[-1] + 1
         i = j + 1
+    prev = None
     for b in range(n_bars):
         bar = Bar(bpb, 4, audio_start=grid.bar_time(b))
-        prev = None
         for k in range(bpb):
             i = phase + b * bpb + k
             if i >= n_beats:
@@ -819,24 +926,43 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 bar.chords.append(ChordEvent(F(k), sym))
             prev = sym
         bars.append(bar)
-    # Akkorde: gleiche Akkorde über Taktgrenzen nicht wiederholen, aber am Taktanfang anzeigen
-    last = None
+    # Lesbarkeit: im selben Takt gleicher Akkord mit anderem Basston -> nur der erste; Ein-Schlag-Slashakkorde weg
     for bar in bars:
-        if bar.chords and bar.chords[0].onset > 0 and last:
-            bar.chords.insert(0, ChordEvent(F(0), last))
-        if bar.chords:
-            last = bar.chords[-1].symbol
+        merged = []
+        for c in bar.chords:
+            try:
+                ch = ChordSymbol.parse(c.symbol)
+            except ValueError:
+                merged.append(c)
+                continue
+            if merged:
+                try:
+                    pc = ChordSymbol.parse(merged[-1].symbol)
+                    if pc.root == ch.root and pc.quality == ch.quality:
+                        continue
+                except ValueError:
+                    pass
+            merged.append(c)
+        out_c = []
+        for k, c in enumerate(merged):
+            end = merged[k + 1].onset if k + 1 < len(merged) else bar.length
+            if '/' in c.symbol and end - c.onset <= 1 and len(merged) > 2:
+                continue
+            out_c.append(c)
+        bar.chords = out_c
+    # Akkorde nur bei Wechsel (der Rest wird beim Satz ergänzt)
     # Melodie quantisieren
     events = []
+    qres = 2 if tempo >= 100 else 4          # schnelle Lieder: Achtelraster, sonst Sechzehntel
     for n in vnotes:
-        b0, p0 = grid.to_bar(n.start, 4)
-        b1, p1 = grid.to_bar(n.end, 4)
+        b0, p0 = grid.to_bar(n.start, qres)
+        b1, p1 = grid.to_bar(n.end, qres)
         if b0 < 0 or b0 >= len(bars):
             continue
         a = b0 * bpb + p0
         e = b1 * bpb + p1
         if e <= a:
-            e = a + F(1, 4)
+            e = a + F(1, qres)
         events.append([a, e, n])
     events.sort(key=lambda x: x[0])
     # Überlappungen und Dubletten auflösen
@@ -851,7 +977,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         cleaned.append(ev)
     # kurze Lücken (< 1/4 Schlag) schließen
     for k in range(len(cleaned) - 1):
-        if 0 < cleaned[k + 1][0] - cleaned[k][1] <= F(1, 4):
+        if 0 < cleaned[k + 1][0] - cleaned[k][1] <= F(1, 2):
             cleaned[k][1] = cleaned[k + 1][0]
     for a, e, n in cleaned:
         tpc = spell_pitch(n.pitch, key_tpc)
@@ -889,6 +1015,20 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         else:
             auto_lines(song.sections, i)
     song.default_form()
+    for item in song.form:
+        cue = getattr(song.section(item.section), '_cue', '')
+        if cue:
+            item.note = f'({cue})'
+    for sec in song.sections:
+        if hasattr(sec, '_cue'):
+            delattr(sec, '_cue')
+    if note_syl:
+        sung = sum(1 for n in vnotes if id(n) in note_syl)
+        rate = len(vnotes) / max(1, sung)
+        rep['noten_pro_silbe'] = round(rate, 2)
+        if rate < 1.05 and len(note_syl) > 40:
+            rep['warnung'] = ('Der Text scheint länger zu sein als das, was in der Aufnahme gesungen wird – '
+                              'vielleicht stammt er von einer anderen Version. Bitte Ablauf prüfen.')
     song.notes['analyse'] = rep
     step('Fertig', 1.0)
     return AnalysisResult(song, rep)
@@ -1008,7 +1148,8 @@ def _make_sections(bars, blocks, line_ranges, grid, note_syl, beats) -> list[Sec
             b1, p1 = grid.to_bar(t1, 1)
             if p0 >= grid.bpb - 1:  # Auftakt -> Teil beginnt im nächsten Takt
                 b0 += 1
-            spans.append([max(0, b0), min(nb, b1 + (1 if p1 > 0 else 0)), blocks[bi].label, '\n'.join(blocks[bi].lines)])
+            spans.append([max(0, b0), min(nb, b1 + (1 if p1 > 0 else 0)), blocks[bi].label, '\n'.join(blocks[bi].lines),
+                          ' / '.join(c for _, c in getattr(blocks[bi], 'cues', []))])
     else:
         # Gesungene Bereiche, getrennt durch >= 2 Takte ohne Gesang
         i = 0
@@ -1024,23 +1165,29 @@ def _make_sections(bars, blocks, line_ranges, grid, note_syl, beats) -> list[Sec
             end = j - silent
             # lange Bereiche in 8-Takt-Teile
             for a in range(i, end, 8):
-                spans.append([a, min(end, a + 8), None, None])
+                spans.append([a, min(end, a + 8), None, None, ''])
             i = j
     # Lücken auffüllen (Intro/Interlude/Outro) und Grenzen bereinigen
     spans.sort()
     out = []
     pos = 0
-    for k, (a, b, label, text) in enumerate(spans):
+    for k, (a, b, label, text, cue) in enumerate(spans):
         a = max(a, pos)
         if b <= a:
             continue
         if a > pos:
-            gap_label = 'Intro' if not out else 'Interlude'
-            out.append([pos, a, gap_label, None])
-        out.append([a, b, label, text])
+            if out and a - pos <= 2:
+                out[-1][1] = a           # kurze Lücke = Atempause, gehört zum vorigen Teil
+            else:
+                gap_label = 'Intro' if not out else 'Interlude'
+                out.append([pos, a, gap_label, None, ''])
+        out.append([a, b, label, text, cue])
         pos = b
     if pos < nb:
-        out.append([pos, nb, 'Outro', None])
+        if out and (str(out[-1][2]).lower().startswith('outro') or nb - pos <= 2):
+            out[-1][1] = nb
+        else:
+            out.append([pos, nb, 'Outro', None, ''])
     # Beschriftung ohne Text: ähnliche Teile gruppieren (Grundtöne pro Takt), häufigster später Teil = Chorus
     if not blocks:
         def roots(a, b):
@@ -1085,11 +1232,11 @@ def _make_sections(bars, blocks, line_ranges, grid, note_syl, beats) -> list[Sec
     from ..importers.musescore import classify_label, SECTION_ABBR
     counts = {}
     total = {}
-    for a, b, label, _ in out:
+    for a, b, label, _, _ in out:
         kind, nice, num = classify_label(label or 'Verse')
         total[nice] = total.get(nice, 0) + 1
     secs = []
-    for a, b, label, text in out:
+    for a, b, label, text, cue in out:
         kind, nice, num = classify_label(label or 'Verse')
         counts[nice] = counts.get(nice, 0) + 1
         n = num or str(counts[nice])
@@ -1101,5 +1248,7 @@ def _make_sections(bars, blocks, line_ranges, grid, note_syl, beats) -> list[Sec
                       audio_start=bars[a].audio_start, audio_end=(bars[b].audio_start if b < nb else None))
         if text:
             sec._text = text
+        if cue:
+            sec._cue = cue
         secs.append(sec)
     return secs

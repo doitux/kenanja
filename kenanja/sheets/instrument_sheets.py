@@ -63,7 +63,7 @@ def build_guitar_sheet(song: Song, out_odt, instrument: str = 'AGit', pdf: bool 
                     used += [c for _, c in ll.chords]
                 doc.paragraph(keep_next=j < len(laid) - 1).text(ll.text or ' ')
         else:
-            rows = CS.bar_lines(sec, st, doc.text_width)
+            rows = CS.bar_lines(sec, st, doc.text_width, CS.L.chord_before(s.sections, idx))
             for j, row in enumerate(rows):
                 CS.add_positioned(doc, row, st, keep_next=j < len(rows) - 1)
                 used += [c for _, c in row if c != '|']
@@ -120,7 +120,7 @@ def build_piano_sheet(song: Song, out_odt, snippet_renderer=None, pdf: bool = Tr
                 done.add(sec.id)
                 doc.paragraph(size=7)
                 continue
-            rows = CS.bar_lines(sec, st, doc.text_width)
+            rows = CS.bar_lines(sec, st, doc.text_width, CS.L.chord_before(s.sections, idx))
             for j, row in enumerate(rows):
                 CS.add_positioned(doc, row, st, keep_next=j < len(rows) - 1)
             doc.paragraph(size=7)

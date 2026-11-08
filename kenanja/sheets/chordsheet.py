@@ -171,7 +171,7 @@ def section_lines(song: Song, sec_index: int, st: SheetStyle) -> list[LaidLine]:
     return out
 
 
-def bar_lines(sec: Section, st: SheetStyle, text_width: float) -> list[list[tuple[float, str]]]:
+def bar_lines(sec: Section, st: SheetStyle, text_width: float, start_chord: Optional[str] = None) -> list[list[tuple[float, str]]]:
     """Instrumentalteil als Taktzeilen: [[(x, text), ...], ...] – Text '|' oder Akkord."""
     rows = []
     bars = sec.bars
@@ -186,6 +186,7 @@ def bar_lines(sec: Section, st: SheetStyle, text_width: float) -> list[list[tupl
         sizes.append(min(per, rest))
         rest -= sizes[-1]
     i = 0
+    carried = start_chord
     for size in sizes:
         W = text_width / max(per, size)
         row = []
@@ -195,9 +196,13 @@ def bar_lines(sec: Section, st: SheetStyle, text_width: float) -> list[list[tupl
             x0 = bi * W
             row.append((x0, '|'))
             x_min = x0 + text_width_cm('| ', st.chord_size, st.chord_kind)
-            chords = bar.chords or ([] if bi or i else [])
+            chords = bar.chords
+            if not chords and carried:
+                from ..model import ChordEvent
+                chords = [ChordEvent(F(0), carried)]
             if not chords:
                 continue
+            carried = chords[-1].symbol
             for c in chords:
                 x = x0 + 0.45 + float(c.onset / bar.length) * (W - 0.6)
                 x = max(x, x_min)
@@ -274,7 +279,7 @@ def write_section(doc: OdtDoc, song: Song, sec_index: int, item: FormItem, st: S
                 add_positioned(doc, ll.chords, st, keep_next=True)
             doc.paragraph(keep_next=not last).text(ll.text or ' ')
     else:
-        rows = bar_lines(sec, st, doc.text_width)
+        rows = bar_lines(sec, st, doc.text_width, L.chord_before(song.sections, sec_index))
         for k, row in enumerate(rows):
             add_positioned(doc, row, st, keep_next=k < len(rows) - 1)
     doc.paragraph(size=7)
