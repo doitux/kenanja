@@ -120,7 +120,13 @@ def export_parts_pdf(src, out_dir, base_name: str, style: Optional[str] = None, 
 def trim_png(path, pad: int = 12) -> Path:
     """Weißen Rand eines exportierten Notenbilds abschneiden."""
     from PIL import Image, ImageChops
-    im = Image.open(path).convert('RGB')
+    src = Image.open(path)
+    if src.mode in ('RGBA', 'LA', 'P'):
+        src = src.convert('RGBA')
+        white = Image.new('RGBA', src.size, (255, 255, 255, 255))
+        im = Image.alpha_composite(white, src).convert('RGB')
+    else:
+        im = src.convert('RGB')
     bg = Image.new('RGB', im.size, (255, 255, 255))
     bbox = ImageChops.difference(im, bg).getbbox()
     if bbox:

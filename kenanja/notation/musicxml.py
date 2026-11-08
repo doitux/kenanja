@@ -31,6 +31,9 @@ PART_DEFS = {
 }
 
 
+VOCAL_PARTS = {'Sopran', 'Alt', 'Tenor', 'Bass', 'Unterstimme', 'Oberstimme', 'Melodie'}
+
+
 def _clef_for(name: str):
     from music21 import clef
     if name in PART_DEFS:
@@ -184,7 +187,7 @@ def build_score(song: Song, lbars: list[LBar], parts: list[str], lead_name: str 
                     continue
                 nn = copy.copy(n)
                 nn.dur = dur
-                el = _m21_note(nn, 0, with_lyrics=is_lead)
+                el = _m21_note(nn, 0, with_lyrics=is_lead or pname in VOCAL_PARTS)
                 if n.pitch is not None:
                     if pending_tie_stop and n.onset == 0:
                         el.tie = tie.Tie('stop' if not n.tie else 'continue')
