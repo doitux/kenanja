@@ -304,7 +304,7 @@ def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09, 
     hop = 256
     rms = librosa.feature.rms(y=voc_mono22, frame_length=2048, hop_length=hop)[0]
     t = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
-    f0, voiced, prob = librosa.pyin(voc_mono22, fmin=75, fmax=1000, sr=sr, frame_length=2048, hop_length=hop,
+    f0, voiced, prob = librosa.pyin(voc_mono22, fmin=90, fmax=1000, sr=sr, frame_length=2048, hop_length=hop,
                                     fill_na=np.nan)
     n = min(len(f0), len(rms))
     f0, voiced, rms, t = f0[:n], voiced[:n], rms[:n], t[:n]
@@ -874,7 +874,7 @@ def _label_counter(labels):
 
 
 def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors: str = '',
-               progress=None, use_asr: bool = True, cache=None) -> AnalysisResult:
+               progress=None, use_asr: bool = True, cache=None, gemeinde: bool = True) -> AnalysisResult:
     import librosa
     rep = {}
 
@@ -913,20 +913,74 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         rep['leadstimme'] = f'nicht getrennt ({type(e).__name__})'
         lead22 = voc22
     step('Melodie', 0.74)
-    vnotes = merge_scoops(vocal_notes(lead22))
-    snap_to_key(vnotes, key_tpc, minor)
-    octv = _norm_octave(vnotes)
-    for n in vnotes:
-        n.pitch += octv
-    _fix_octaves(vnotes)
-    rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
-
-    # Text
-    step('Liedtext', 0.8)
     note_syl: dict[int, Syllable] = {}
     blocks = parse_lyrics(lyrics_text) if lyrics_text and lyrics_text.strip() else []
     line_ranges = []
-    if blocks:
+    if blocks and gemeinde:
+        # Gemeinde-Modus: eine Note je Silbe, Zeilen auf ganzen Takten, gleiche Zeilen gleich notiert
+        from . import gemeinde as G
+        lang = detect_language(lyrics_text)
+        syls = text_syllables(blocks, lang)
+        lines = [l for b in blocks for l in b.lines]
+        counts = [sum(1 for s_ in syls if s_.line == li) for li in range(len(lines))]
+
+        def _snap(ln):
+            tmp = [VNote(0, 0, n.pitch, fpitch=n.fpitch) for n in ln if n.fpitch is not None]
+            snap_to_key(tmp, key_tpc, minor)
+            it = iter(tmp)
+            for n in ln:
+                if n.fpitch is not None:
+                    n.pitch = next(it).pitch
+        step('Liedtext und Melodie', 0.8)
+        # 1. Noten wie bisher erkennen und die Zeilen grob zuordnen (liefert Zeilenanfänge als Anker)
+        # (ohne Anschleif-Zusammenfassung: kurze Töne mit eigener Silbe sind hier echte Noten; Anschliffe
+        #  ohne eigene Silbe gehen später in der Silbennote auf)
+        vn0 = vocal_notes(lead22)
+        snap_to_key(vn0, key_tpc, minor)
+        rg0 = align_lines(counts, merge_scoops([VNote(n.start, n.end, n.pitch, n.strength, n.fpitch) for n in vn0]))
+        vm = merge_scoops([VNote(n.start, n.end, n.pitch, n.strength, n.fpitch) for n in vn0])
+        anchors = [((grid.beat_pos(vm[r[0]].start) - phase) / bpb if r else None) for r in rg0]
+        line_syls = [[s_ for s_ in syls if s_.line == li] for li in range(len(lines))]
+        labels = [re.sub(r'[\d\s.:]+$', '', (b_.label or '')).strip().lower() or None for b_ in blocks]
+        # 2. Blöcke verorten (Wiederholungen über die Melodie), je Silbe eine Note, gleiche Zeilen angleichen
+        old_ranges = [((vm[r[0]].start, vm[r[1] - 1].end) if r and r[1] > r[0] else None) for r in rg0]
+        res_lines, _, _, changed, gmode = G.transcribe(
+            lead22, beats, phase, bpb, counts, snap=_snap, blocks=[len(b_.lines) for b_ in blocks],
+            anchors=anchors, vnotes=vn0, line_syls=line_syls, align=align_lines,
+            assign=lambda sy, ns: G.assign_syllables_sung(
+                sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
+                                   VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
+            labels=labels, texts=lines, old_ranges=old_ranges)
+        rep['zuordnung'] = gmode
+        rep['_rohnoten'] = len(vm)
+        vnotes = []
+        for li, ln in enumerate(res_lines):
+            if not ln:
+                continue
+            ls = [s_ for s_ in syls if s_.line == li]
+            for (t0, t1, p, fp), sy in zip(ln, ls):
+                vn = VNote(t0, t1, p, fpitch=fp)
+                vnotes.append(vn)
+                note_syl[id(vn)] = sy
+            line_ranges.append((li, ln[0][0], ln[-1][1]))
+        octv = _norm_octave(vnotes)
+        for n in vnotes:
+            n.pitch += octv
+        rep['zeilen'] = f'{sum(1 for r in res_lines if r)} von {len(lines)} Zeilen zugeordnet'
+        rep['angeglichen'] = changed
+        rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
+    else:
+        vnotes = merge_scoops(vocal_notes(lead22))
+        snap_to_key(vnotes, key_tpc, minor)
+        octv = _norm_octave(vnotes)
+        for n in vnotes:
+            n.pitch += octv
+        _fix_octaves(vnotes)
+        rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
+
+    # Text
+    step('Liedtext', 0.8)
+    if blocks and not gemeinde:
         lang = detect_language(lyrics_text)
         syls = text_syllables(blocks, lang)
         lines = [l for b in blocks for l in b.lines]
@@ -1124,8 +1178,10 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         if hasattr(sec, '_cue'):
             delattr(sec, '_cue')
     if note_syl:
-        sung = sum(1 for n in vnotes if id(n) in note_syl)
-        rate = len(vnotes) / max(1, sung)
+        # Plausibilität: erkannte Gesangsnoten je Textsilbe (im Gemeinde-Modus die Rohnoten vor der Vereinfachung)
+        raw = rep.pop('_rohnoten', None)
+        sung = len(note_syl) if raw is not None else sum(1 for n in vnotes if id(n) in note_syl)
+        rate = (raw if raw is not None else len(vnotes)) / max(1, sung)
         rep['noten_pro_silbe'] = round(rate, 2)
         if rate < 1.05 and len(note_syl) > 40:
             rep['warnung'] = ('Der Text scheint länger zu sein als das, was in der Aufnahme gesungen wird – '

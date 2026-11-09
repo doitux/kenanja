@@ -55,3 +55,21 @@ def test_liedtext():
     assert blocks[2].lines == ['D', 'E', 'E']
     lines = ['a', 'b', 'c', 'd', 'x', 'y', 'z', 'w', 'a', 'b', 'c', 'd', 'x', 'y', 'z', 'w']
     assert len(split_by_repetition(lines)) >= 2
+
+
+def test_zeilen_zuordnung_mehr_text_als_noten():
+    """Mehr Textzeilen als Noten (z. B. kurzer Ausschnitt mit ganzem Liedtext) darf nicht abstürzen."""
+    from kenanja.audio.analysis import VNote, align_lines
+    notes = [VNote(i * 0.5, i * 0.5 + 0.4, 60 + i % 3) for i in range(6)]
+    res = align_lines([5, 6, 7, 8, 5, 6], notes)
+    assert len(res) == 6
+    assert all(r is None or (0 <= r[0] < r[1] <= len(notes)) for r in res)
+
+
+def test_gemeinde_angleichen_nur_bei_mehrheit():
+    from kenanja.audio.gemeinde import LNote, unify_repeats
+    mk = lambda ps: [LNote(16 + 2 * k, 18 + 2 * k, float(p), p) for k, p in enumerate(ps)]
+    lines = [mk([62, 64, 65]), mk([62, 64, 65]), mk([62, 63, 65]), mk([60, 61, 62])]
+    unify_repeats(lines, [0, 0, 0, 0], texts=['a b c', 'a b c', 'a b c', 'x y z'])
+    assert [n.pitch for n in lines[2]] == [62, 64, 65]      # Mehrheit (2 von 3) gewinnt
+    assert [n.pitch for n in lines[3]] == [60, 61, 62]      # anderer Text bleibt unberührt
