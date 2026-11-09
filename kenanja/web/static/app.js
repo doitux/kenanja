@@ -38,6 +38,7 @@ async function showHome() {
     <textarea id="f_text" class="lyrics" placeholder="[Verse 1]&#10;Erste Zeile …&#10;Zweite Zeile …&#10;&#10;[Chorus]&#10;…&#10;&#10;Wiederholungen bitte ausschreiben – oder nur die Überschrift erneut setzen (z. B. [Chorus]), dann wird der Text übernommen."></textarea>
     <div class="row" style="margin-top:12px"><button class="primary" onclick="createProject()">Analysieren</button>
       <span class="muted small">Dauer: einige Minuten (Gesang wird von der Begleitung getrennt).</span></div>
+    <div id="sprachbox"></div>
    </div>
    <div class="card">
     <h2 style="margin-top:0">Deine Songs</h2>
@@ -50,6 +51,27 @@ async function showHome() {
     <input type="file" id="f_mscz" accept=".mscz,.mscx,.json"> <button onclick="importMscz()">Importieren</button>
    </div>
   </div>`;
+  sprachBox();
+}
+// Spracherkennung: optionales Modell (einmaliger Download), verankert Text und Melodie an den gesungenen Wörtern
+let SPRACH_TIMER = null;
+async function sprachBox(target = '#sprachbox') {
+  const box = $(target); if (!box) return;
+  let st; try { st = await api('/api/sprachmodell'); } catch (e) { return; }
+  if (!st.verfuegbar) { box.innerHTML = ''; return; }
+  if (st.bereit) { box.innerHTML = `<p class="muted small">✔ Spracherkennung eingerichtet – Text und Melodie werden an den gesungenen Wörtern ausgerichtet.</p>`; return; }
+  if (st.laeuft) {
+    box.innerHTML = `<div class="hint">Spracherkennung wird geladen … ${Math.round(st.fortschritt * 100)} %<div class="progress"><div style="width:${Math.round(st.fortschritt * 100)}%"></div></div></div>`;
+    clearTimeout(SPRACH_TIMER); SPRACH_TIMER = setTimeout(() => sprachBox(target), 1500); return;
+  }
+  box.innerHTML = `<div class="hint"><b>Tipp:</b> Mit der Spracherkennung trifft Kenanja Melodie und Text deutlich besser
+    (die Wörter werden dort angelegt, wo sie gesungen werden). Einmaliger Download, ca. 650 MB, läuft danach ohne Internet.
+    ${st.fehler ? `<br><span class="danger-text">${esc(st.fehler)}</span>` : ''}
+    <div style="margin-top:8px"><button class="small" onclick="sprachLaden('${target}')">Spracherkennung herunterladen</button></div></div>`;
+}
+async function sprachLaden(target) {
+  try { await api('/api/sprachmodell', {method: 'POST'}); } catch (e) { return alert(e.message); }
+  sprachBox(target);
 }
 function searchLyrics() {
   const q = `${$('#f_titel').value} ${$('#f_autoren').value} Songtext`.trim();
@@ -98,7 +120,8 @@ function render() {
    <div class="spread"><div><h1>${esc(s.title)}</h1>
     <div><span class="pill">Original: ${esc(s.key)}</span><span class="pill">Zieltonart: ${esc(s.target_key)} (${s.transpose > 0 ? '+' : ''}${s.transpose})</span>
      <span class="pill">Tempo ${Math.round(s.tempo)}</span>${rep.takt ? `<span class="pill">${rep.takt}-Takt</span>` : ''}
-     ${rep.zeilen ? `<span class="pill">${esc(rep.zeilen)}</span>` : ''}</div></div>
+     ${rep.zeilen ? `<span class="pill">${esc(rep.zeilen)}</span>` : ''}
+     ${rep.spracherkennung === 'nicht eingerichtet' ? `<span class="pill" title="Unter Einstellungen herunterladen, danach „Neu analysieren“">ohne Spracherkennung</span>` : ''}</div></div>
     <div class="row"><button onclick="openPdf('chordsheet')">Chord-Sheet ↗</button><button onclick="openPdf('chortext')">Chortext ↗</button>
      <button onclick="openPdf('gitarre')">Gitarre ↗</button><button onclick="oeffnen(P.pfad)" title="${esc(P.pfad)}">📁 Projektordner</button></div></div>
    <div class="tabs">${[['song', '1 · Song & Text'], ['ablauf', '2 · Ablauf'], ['besetzung', '3 · Besetzung'], ['stimmen', '4 · Stimmen & Tonart'], ['erzeugen', '5 · Erzeugen']]
@@ -390,7 +413,9 @@ async function showSettings() {
    <label>MuseScore-Programm (leer = automatisch suchen)</label><input type="text" id="e_ms" value="${esc(SETTINGS.musescore)}" placeholder="${esc(g.musescore)}">
    <p class="small">Gefunden: MuseScore: <b>${esc(g.musescore || 'nicht gefunden')}</b> · LibreOffice: <b>${esc(g.libreoffice || 'nicht gefunden')}</b> ·
    Rubber Band: <b>${esc(g.rubberband || 'nicht gefunden')}</b></p>
+   <label>Spracherkennung</label><div id="sprachbox2"></div>
    <button class="primary" onclick="saveSettings()">Speichern</button></div>`;
+  sprachBox('#sprachbox2');
 }
 async function saveSettings() {
   let r;

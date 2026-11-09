@@ -461,14 +461,71 @@ def line_from_notes(cl: Cells, notes: list, syls: list, assign) -> Optional[list
     ihrer längsten (stabilsten) Note; Zusatznoten ohne Silbe (Verzierungen, Melismen) gehen darin auf."""
     if not notes or not syls:
         return None
-    pairs = assign(syls, notes)
+    return line_from_pairs(cl, assign(syls, notes), len(syls))
+
+
+def _track_note(cl: Cells, proto, t0: float, t1: float):
+    """Ersatznote, wenn in einem verankerten Wortabschnitt keine Note erkannt wurde: Ton aus der Tonhöhenkurve."""
+    tr = cl.tr
+    i0, i1 = np.searchsorted(tr.t, [t0 + 0.04, min(t1, t0 + 0.7)])
+    seg = tr.midi[i0:i1]
+    seg = seg[~np.isnan(seg)]
+    if len(seg) < 3:
+        return None
+    fp = float(np.median(seg))
+    return type(proto)(t0, max(t0 + 0.1, t1), int(round(fp)), 0.5, fp)
+
+
+def line_from_anchored(cl: Cells, vnotes: list, syls: list, times: list, assign, t_end: float,
+                       window: Optional[list] = None) -> Optional[list['LNote']]:
+    """Wie line_from_notes, aber mit Wortzeiten aus der Spracherkennung: jedes erkannte Wort beginnt dort, wo es
+    gesungen wurde; die Silben dazwischen verteilen sich auf die Noten ihres Abschnitts."""
+    ks = [k for k, t in enumerate(times) if t is not None]
+    if not ks or not vnotes:
+        return None
+    EARLY = 0.15
+    segs = []      # (silben, ta, tb)
+    if ks[0] > 0:
+        k0 = ks[0]
+        ta = times[k0] - max(1.2, 0.55 * k0)
+        if window:
+            ta = min(ta, window[0].start - 0.05) if window[0].start < times[k0] - 0.2 else ta
+        segs.append((syls[:k0], ta, times[k0] - EARLY))
+    for q, k in enumerate(ks):
+        nk = ks[q + 1] if q + 1 < len(ks) else len(syls)
+        tb = times[nk] - EARLY if nk < len(syls) else t_end
+        segs.append((syls[k:nk], times[k] - EARLY, tb))
+    pairs = []
+    proto = vnotes[0]
+    for sy, ta, tb in segs:
+        if not sy:
+            continue
+        ns = [v for v in vnotes if ta <= v.start < tb]
+        if not ns:
+            tn = _track_note(cl, proto, ta + EARLY, tb)
+            if tn is None:
+                if pairs:          # Silbe auf die vorige Note ziehen (Haltebogen/Melisma)
+                    last_n = pairs[-1][0]
+                    for x in sy:
+                        mid = type(proto)(last_n.end, last_n.end + 0.1, last_n.pitch, 0.5, last_n.fpitch)
+                        pairs.append((mid, x))
+                    continue
+                return None
+            ns = [tn]
+        pairs += assign(sy, ns)
+    if not pairs:
+        return None
+    return line_from_pairs(cl, pairs, len(syls))
+
+
+def line_from_pairs(cl: Cells, pairs: list, nsyl: int) -> Optional[list['LNote']]:
     groups: list[list] = []
     for n, sy in pairs:
         if sy is not None or not groups:
             groups.append([n])
         else:
             groups[-1].append(n)
-    groups = groups[:len(syls)]
+    groups = groups[:nsyl]
     cell_of = lambda t: int(np.argmin(np.abs(cl.times - t)))
     raw_of = lambda t: float(np.interp(t, cl.times, np.arange(len(cl.times))))
     out = []
@@ -484,7 +541,7 @@ def line_from_notes(cl: Cells, notes: list, syls: list, assign) -> Optional[list
         out[k].end = min(max(out[k].end, out[k].cell + 1), out[k + 1].cell)
         if out[k + 1].cell - out[k].end <= 1:      # winzige Lücke: Note bis zur nächsten Silbe halten
             out[k].end = out[k + 1].cell
-    while len(out) < len(syls):                     # zu wenige Noten: letzte Silben auf die Schlusszelle
+    while len(out) < nsyl:                          # zu wenige Noten: letzte Silben auf die Schlusszelle
         last = out[-1]
         out.append(LNote(last.end, last.end + 2, last.fpitch, last.pitch))
     return out
@@ -648,7 +705,7 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
                anchors: Optional[list[Optional[float]]] = None, vnotes: Optional[list] = None,
                line_syls: Optional[list] = None, assign=None, align=None, labels: Optional[list] = None,
                texts: Optional[list[str]] = None, old_ranges: Optional[list] = None,
-               scale: Optional[set] = None):
+               scale: Optional[set] = None, syl_times: Optional[list] = None):
     """-> (Liste je Zeile: [(start_s, end_s, midi, fpitch)] oder None, Track, Cells, Zahl angeglichener Silben)"""
     tr = tr or pitch_track(y22)
     cl = Cells(tr, beats, phase, bpb)
@@ -707,7 +764,31 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
             pos += n
     lines: list[Optional[list[LNote]]] = []
     anchors: list[Optional[int]] = []
+    # Zeilenanfänge aus der Spracherkennung (für das Ende der jeweils vorigen Zeile)
+    line_t0 = [None] * len(counts)
+    if syl_times is not None:
+        for li, ts in enumerate(syl_times):
+            k = next((k for k, t in enumerate(ts or []) if t is not None), None)
+            if k is not None:
+                line_t0[li] = ts[k] - 0.4 * k
+    bar_of = lambda t: max(0, (int(np.argmin(np.abs(cl.times - t))) + SUB - cl.phase * SUB) // (SUB * cl.bpb))
     for li, sp in enumerate(spans):
+        ts = syl_times[li] if syl_times is not None and li < len(syl_times) else None
+        if (ts and counts[li] and vnotes is not None and line_syls is not None
+                and sum(t is not None for t in ts) >= max(1, 0.25 * sum(1 for s_ in line_syls[li]
+                                                                         if s_.syllabic in ('single', 'begin')))):
+            last = max(t for t in ts if t is not None)
+            nxt = next((line_t0[k] for k in range(li + 1, len(counts)) if line_t0[k] is not None), None)
+            nleft = len(ts) - max(k for k, t in enumerate(ts) if t is not None)
+            t_end = last + 0.6 * nleft + 1.2
+            if nxt is not None and last < nxt:
+                t_end = min(t_end, nxt - 0.15)
+            win = line_notes.get(li)
+            ln = line_from_anchored(cl, vnotes, line_syls[li], ts, assign, t_end, win)
+            if ln:
+                lines.append(ln)
+                anchors.append(cl.bar_cell(bar_of(cl.t(ln[0].cell))))
+                continue
         if sp is None or counts[li] == 0:
             lines.append(None)
             anchors.append(None)

@@ -942,6 +942,37 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         anchors = [((grid.beat_pos(vm[r[0]].start) - phase) / bpb if r else None) for r in rg0]
         line_syls = [[s_ for s_ in syls if s_.line == li] for li in range(len(lines))]
         labels = [re.sub(r'[\d\s.:]+$', '', (b_.label or '')).strip().lower() or None for b_ in blocks]
+        # 1b. Spracherkennung (optional): Wortzeiten verankern Zeilen und Silben dort, wo sie gesungen wurden
+        syl_times = None
+        if use_asr:
+            from . import asr as A
+            try:
+                if A.available() and A.model_ready():
+                    step('Spracherkennung', 0.78)
+                    # ganze Gesangsspur und Leadstimme: zusammen werden deutlich mehr Wörter sicher erkannt
+                    wd = work_dir(path, cache)
+                    per_stem = []
+                    for k, (src, sr_, fn) in enumerate(((voc.mean(0), SR, 'woerter.json'),
+                                                        (lead22, 22050, 'woerter_lead.json'))):
+                        y16 = librosa.resample(np.asarray(src, dtype=np.float32), orig_sr=sr_, target_sr=16000)
+                        per_stem.append(A.words(y16, wd / fn, (lambda f, k=k: progress('Spracherkennung',
+                                                                                       0.78 + 0.01 * (k + f)))
+                                                if progress else None))
+                    found = A.merge(*per_stem)
+                    if found:
+                        st = A.syllable_times(syls, found)
+                        syl_times = [[st[k] for k, s_ in enumerate(syls) if s_.line == li] for li in range(len(lines))]
+                        hit = sum(t is not None for t in st)
+                        nw = sum(1 for s_ in syls if s_.syllabic in ('single', 'begin'))
+                        rep['spracherkennung'] = f'{hit} von {nw} Wörtern verankert'
+                        for li, ts in enumerate(syl_times):
+                            if ts and ts[0] is not None:
+                                anchors[li] = (grid.beat_pos(ts[0]) - phase) / bpb
+                else:
+                    rep['spracherkennung'] = 'nicht eingerichtet'
+            except Exception as e:  # Spracherkennung ist optional
+                rep['spracherkennung'] = f'nicht verfügbar ({type(e).__name__})'
+                syl_times = None
         # 2. Blöcke verorten (Wiederholungen über die Melodie), je Silbe eine Note, gleiche Zeilen angleichen
         old_ranges = [((vm[r[0]].start, vm[r[1] - 1].end) if r and r[1] > r[0] else None) for r in rg0]
         res_lines, _, _, changed, gmode = G.transcribe(
@@ -950,7 +981,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             assign=lambda sy, ns: G.assign_syllables_sung(
                 sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
                                    VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
-            labels=labels, texts=lines, old_ranges=old_ranges,
+            labels=labels, texts=lines, old_ranges=old_ranges, syl_times=syl_times,
             scale={(tpc_pc(key_tpc) + d) % 12 for d in ((0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11))})
         rep['zuordnung'] = gmode
         rep['_rohnoten'] = len(vm)
@@ -980,6 +1011,20 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             if sh:
                 for vn in ln_notes:
                     vn.pitch += sh
+        # einzelne Oktavsprünge der Tonhöhenerkennung (Ton eine Oktave neben seinen Nachbarn) zurückholen
+        for ln_notes in by_line.values():
+            ps = [vn.pitch for vn in ln_notes]
+            line_med = float(np.median(ps)) if len(ps) >= 5 else None
+            for k, vn in enumerate(ln_notes):
+                nb = ps[max(0, k - 2):k] + ps[k + 1:k + 3]
+                if len(nb) < 2:
+                    continue
+                ref = float(np.median(nb))
+                if line_med is not None and abs(vn.pitch - line_med) > abs(vn.pitch - ref):
+                    ref = line_med
+                d = vn.pitch - ref
+                if abs(d) >= 8.5 and abs(d - 12 * np.sign(d)) <= 5:
+                    vn.pitch -= 12 * int(np.sign(d))
         rep['zeilen'] = f'{sum(1 for r in res_lines if r)} von {len(lines)} Zeilen zugeordnet'
         rep['angeglichen'] = changed
         rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))

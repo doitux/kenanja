@@ -98,16 +98,15 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
 
 * Tempo, Taktart und Tonart: zuverlässig.
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
-* Melodie: Kenanja trennt zuerst die Leadstimme vom Chor/Backgroundgesang, fasst angeschliffene Töne
-  mit ihrer Zielnote zusammen und hält die Melodie in einer Lage. Im Vergleich mit von Hand
-  gesetzten Leadsheets haben rund 80 % der Noten den richtigen Ton in der richtigen Oktave,
-  gut drei Viertel sitzen zusätzlich auf der richtigen Sechzehntel. Das Leadsheet daher in MuseScore
-  durchsehen – vor allem Tonwiederholungen und Verzierungen.
+* Melodie: Kenanja trennt zuerst die Leadstimme vom Chor/Backgroundgesang und notiert wie ein
+  Gemeinde-Leadsheet: eine Note je Silbe, gleiche Zeilen gleich, im Zweifel die einfachere Variante,
+  immer in Frauenlage. Das Leadsheet trotzdem in MuseScore durchsehen.
 * Tonart-Wahl: Die höchsten und tiefsten Töne entscheiden über die Zieltonart. Unter „Stimmen & Tonart“
   listet Kenanja genau diese Stellen; jede lässt sich anhören (getrennte Leadstimme und erkannter Ton)
   und mit einem Klick korrigieren oder als Verzierung von der Wertung ausnehmen.
-* Text: wird zeilenweise den Gesangsphrasen zugeordnet. Optional (nur bei der Installation aus dem
-  Quellcode, nicht in der AppImage) verankert Whisper (Spracherkennung) den Text zusätzlich an den gesungenen Wörtern.
+* Text: Mit der Spracherkennung (Einstellungen → „Spracherkennung herunterladen“, einmalig ca. 650 MB,
+  danach offline; oder `kenanja sprachmodell`) legt Kenanja jedes erkannte Wort dort an, wo es gesungen
+  wird – das verbessert Text und Melodie deutlich. Ohne sie wird der Text über die Gesangsphrasen zugeordnet.
   Passt der eingefügte Text nicht zur Aufnahme (z. B. andere Version), warnt Kenanja.
 
 ## Verwendete freie Software und Modelle
@@ -116,7 +115,8 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
   https://github.com/jayg996/BTC-ISMIR19 – hier ohne PyTorch in numpy nachgerechnet.
 * Gesangstrennung: **UVR-MDX-NET Voc_FT**, Leadstimme vom Chor: **UVR_MDXNET_KARA_2** – beide aus dem Ultimate-Vocal-Remover-Projekt (ONNX), https://github.com/TRvlvr/model_repo
 * Tonhöhe: pYIN (librosa) · Silbentrennung: Pyphen · Noten: music21, MuseScore · Text: LibreOffice
-* Transponieren: **Rubber Band** (R3-Engine, Formanterhalt) · optional Spracherkennung: faster-whisper
+* Transponieren: **Rubber Band** (R3-Engine, Formanterhalt)
+* Spracherkennung (optional): **sherpa-onnx** mit **NVIDIA Parakeet TDT 0.6B v3** (CC-BY-4.0), https://github.com/k2-fsa/sherpa-onnx
 
 Lizenz: GPL-3.0-or-later. Songtexte und Aufnahmen gehören ihren Rechteinhabern – Kenanja ist für die
 Probenvorbereitung im Rahmen der Lizenzen eurer Gemeinde (z. B. CCLI) gedacht.

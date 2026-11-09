@@ -5,6 +5,7 @@ scipy
 librosa>=0.10
 soundfile
 onnxruntime>=1.16
+sherpa-onnx>=1.12
 music21>=9
 pyphen
 fastapi

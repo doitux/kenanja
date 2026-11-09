@@ -270,6 +270,43 @@ def put_settings(data: dict):
     return {**s, 'verschoben': moved}
 
 
+# ------------------------------------------------------------------ Spracherkennung (optional) ----
+
+def _sprache_status() -> dict:
+    from ..audio import asr as A
+    job = JOBS.get('__sprache', {})
+    return {'verfuegbar': A.available(), 'bereit': A.model_ready(), 'laeuft': job.get('status') == 'läuft',
+            'fortschritt': job.get('fortschritt', 0.0), 'fehler': job.get('fehler', '')}
+
+
+def _sprache_laden():
+    from ..audio import asr as A
+    job = JOBS['__sprache']
+    try:
+        A.ensure_model(lambda f: job.update(fortschritt=round(f, 3)))
+        job.update(status='fertig', fortschritt=1.0)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(status='fehler', fehler=f'Download fehlgeschlagen: {e}')
+
+
+@app.get('/api/sprachmodell')
+def sprache_status():
+    return _sprache_status()
+
+
+@app.post('/api/sprachmodell')
+def sprache_laden():
+    st = _sprache_status()
+    if not st['verfuegbar']:
+        raise HTTPException(400, 'Spracherkennung ist in dieser Installation nicht enthalten.')
+    if st['bereit'] or st['laeuft']:
+        return st
+    JOBS['__sprache'] = {'status': 'läuft', 'fortschritt': 0.0}
+    threading.Thread(target=_sprache_laden, daemon=True).start()
+    return _sprache_status()
+
+
 # ------------------------------------------------------------------ Projekte ----
 
 @app.get('/api/projekte')

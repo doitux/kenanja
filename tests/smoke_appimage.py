@@ -54,6 +54,10 @@ def main():
     out = subprocess.run([str(app), "pruefen"], env=env, capture_output=True, text=True, timeout=900)
     print(out.stdout)
     assert "btc_large_voca" in out.stdout and ".onnx" in out.stdout, out.stderr[-2000:]
+    assert "Spracherkennung: verfügbar" in out.stdout, out.stdout
+    out = subprocess.run([str(app), "sprachmodell", "--test"], env=env, capture_output=True, text=True, timeout=1200)
+    print(out.stdout[-500:], out.stderr[-1500:])
+    assert "Test ok" in out.stdout
 
     song = work / "probe.mp3"
     make_song(song)

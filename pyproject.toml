@@ -12,7 +12,7 @@ authors = [{name = "doitux"}]
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24", "scipy", "librosa>=0.10", "soundfile", "onnxruntime>=1.16", "music21>=9",
-  "pyphen", "fastapi", "uvicorn", "python-multipart", "pillow",
+  "pyphen", "fastapi", "uvicorn", "python-multipart", "pillow", "sherpa-onnx>=1.12",
 ]
 
 [project.optional-dependencies]

@@ -48,6 +48,8 @@ def main(argv=None):
     e.add_argument('--nebenstimmen', action='store_true')
     e.add_argument('--satb', action='store_true')
     sub.add_parser('pruefen', help='Installation prüfen')
+    sp = sub.add_parser('sprachmodell', help='Spracherkennung einrichten (einmaliger Download, ca. 650 MB)')
+    sp.add_argument('--test', action='store_true', help='danach kurz ausprobieren')
     de = sub.add_parser('deinstallieren', help='Kenanja restlos entfernen (Projekte bleiben, außer --alles)')
     de.add_argument('--alles', action='store_true', help='auch alle Kenanja-Projekte löschen')
     args = ap.parse_args(argv)
@@ -94,6 +96,24 @@ def main(argv=None):
                                                harmony_voices=args.nebenstimmen, satb=args.satb),
                          folder=args.out or Path(args.song).resolve().parent / 'Export')
         print(json.dumps(res, ensure_ascii=False, indent=1))
+    elif args.cmd == 'sprachmodell':
+        from .audio import asr as A
+        if not A.available():
+            print('Spracherkennung ist in dieser Installation nicht enthalten (pip install sherpa-onnx).')
+            sys.exit(1)
+        last = [-1]
+
+        def prog(f):
+            p = int(f * 100)
+            if p // 10 != last[0] // 10:
+                print(f'  {p} %', flush=True)
+            last[0] = p
+        print('Sprachmodell:', A.ensure_model(prog))
+        if args.test:
+            import numpy as np
+            t = np.arange(16000 * 2) / 16000
+            A.words(0.1 * np.sin(2 * np.pi * 220 * t).astype(np.float32))
+            print('Spracherkennung: Test ok')
     elif args.cmd == 'pruefen':
         check()
 
@@ -120,11 +140,12 @@ def check():
     except Exception as e:
         ok = False
         print('Modelle     : Download fehlgeschlagen –', e)
-    try:
-        import faster_whisper  # noqa
-        print('Whisper     : installiert (Text wird zusätzlich per Spracherkennung ausgerichtet)')
-    except ImportError:
-        print('Whisper     : nicht enthalten (optional) – der Text wird über die Silben der Melodie zugeordnet')
+    from .audio import asr as A
+    if A.available():
+        print('Spracherkennung:', 'verfügbar, Modell geladen' if A.model_ready()
+              else 'verfügbar, Modell noch nicht geladen (kenanja sprachmodell)')
+    else:
+        print('Spracherkennung: nicht enthalten (optional) – der Text wird über die Silben der Melodie zugeordnet')
     return ok and bool(ff)
 
 

@@ -73,3 +73,21 @@ def test_gemeinde_angleichen_nur_bei_mehrheit():
     unify_repeats(lines, [0, 0, 0, 0], texts=['a b c', 'a b c', 'a b c', 'x y z'])
     assert [n.pitch for n in lines[2]] == [62, 64, 65]      # Mehrheit (2 von 3) gewinnt
     assert [n.pitch for n in lines[3]] == [60, 61, 62]      # anderer Text bleibt unberührt
+
+
+def test_spracherkennung_woerter_verankern():
+    """Erkannte Wörter (mit Ad-libs und einem Hörfehler) werden den richtigen Textwörtern zugeordnet."""
+    from kenanja.audio import asr as A
+    from kenanja.audio.analysis import parse_lyrics, text_syllables
+    blocks = parse_lyrics('[Verse]\nDer Morgen kommt ganz leise\nund alles wird hell\n\n[Chorus]\nSinge laut')
+    syls = text_syllables(blocks, 'de')
+    found = [(1.0, 1.3, 'der'), (1.3, 1.9, 'Morgen'), (2.0, 2.4, 'kommt'), (2.4, 2.8, 'kanz'), (2.9, 3.6, 'leise'),
+             (4.0, 4.5, 'yeah'), (5.0, 5.2, 'und'), (5.2, 5.6, 'alles'), (5.6, 5.9, 'wird'), (6.0, 6.5, 'hell'),
+             (9.0, 9.6, 'singe'), (9.7, 10.2, 'laut')]
+    t = A.syllable_times(syls, A.merge(found, [(5.25, 5.6, 'alles')]))
+    words = {s.text.lower().strip(',.'): tt for s, tt in zip(syls, t) if s.syllabic in ('single', 'begin')}
+    assert words['der'] == 1.0 and words['mor'] == 1.3 and words['al'] in (5.2, 5.25) and words['hell'] == 6.0
+    assert words['sin'] == 9.0 and words['laut'] == 9.7
+    # ein Wort der Aufnahme wird nicht zweimal verwendet
+    used = [x for x in t if x is not None]
+    assert len(used) == len(set(used))

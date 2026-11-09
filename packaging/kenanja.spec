@@ -14,6 +14,12 @@ hidden = ['PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineCore', 'PySide6.QtWe
           'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on', 'multipart']
 hidden += collect_submodules('kenanja')
 try:
+    import sherpa_onnx  # noqa: F401  (Spracherkennung; Modell wird bei Bedarf geladen)
+    hidden += ['sherpa_onnx']
+    binaries += collect_dynamic_libs('sherpa_onnx')
+except ImportError:
+    pass
+try:
     import faster_whisper  # noqa: F401  (Spracherkennung, optional)
     hidden += ['faster_whisper', 'ctranslate2']
     datas += collect_data_files('faster_whisper')
