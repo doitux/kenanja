@@ -12,48 +12,57 @@ import numpy as np
 
 from .btc import cache_dir
 
-MODEL_URL = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Voc_FT.onnx'
-N_FFT, HOP, DIM_F, DIM_T, COMPENSATE = 7680, 1024, 3072, 256, 1.021
+BASE = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/'
+# name: (Datei, n_fft, dim_f, dim_t, Ausgleich)
+MODELS = {
+    'gesang': ('UVR-MDX-NET-Voc_FT.onnx', 7680, 3072, 256, 1.021),   # alle Stimmen vs. Begleitung
+    'lead': ('UVR_MDXNET_KARA_2.onnx', 5120, 2048, 256, 1.065),      # Chor/Backing aus der Gesangsspur (Karaoke)
+}
+MODEL_URL = BASE + MODELS['gesang'][0]
+HOP = 1024
 SR = 44100
 
 
-def ensure_model() -> Path:
-    p = cache_dir() / 'UVR-MDX-NET-Voc_FT.onnx'
+def ensure_model(name: str = 'gesang') -> Path:
+    fname = MODELS[name][0]
+    p = cache_dir() / fname
     if not p.exists() or p.stat().st_size < 1_000_000:
         tmp = p.with_suffix('.part')
-        urllib.request.urlretrieve(MODEL_URL, tmp)
+        urllib.request.urlretrieve(BASE + fname, tmp)
         tmp.rename(p)
     return p
 
 
-def _stft(x):
+def _stft(x, n_fft, dim_f):
     import librosa
-    # x: [2, n] -> [4, DIM_F, T]
-    specs = [librosa.stft(c, n_fft=N_FFT, hop_length=HOP, window='hann', center=True, pad_mode='reflect') for c in x]
+    # x: [2, n] -> [4, dim_f, T]
+    specs = [librosa.stft(c, n_fft=n_fft, hop_length=HOP, window='hann', center=True, pad_mode='reflect') for c in x]
     out = []
     for s in specs:
-        s = s[:DIM_F]
+        s = s[:dim_f]
         out += [s.real, s.imag]
     return np.stack(out).astype(np.float32)
 
 
-def _istft(spec, length):
+def _istft(spec, length, n_fft, dim_f):
     import librosa
     chans = []
     for c in range(2):
         re, im = spec[2 * c], spec[2 * c + 1]
-        full = np.zeros((N_FFT // 2 + 1, re.shape[1]), dtype=np.complex64)
-        full[:DIM_F] = re + 1j * im
-        chans.append(librosa.istft(full, n_fft=N_FFT, hop_length=HOP, window='hann', center=True, length=length))
+        full = np.zeros((n_fft // 2 + 1, re.shape[1]), dtype=np.complex64)
+        full[:dim_f] = re + 1j * im
+        chans.append(librosa.istft(full, n_fft=n_fft, hop_length=HOP, window='hann', center=True, length=length))
     return np.stack(chans)
 
 
-def separate(mix: np.ndarray, progress=None, denoise: bool = False) -> tuple[np.ndarray, np.ndarray]:
-    """mix: [2, n] Stereo mit 44100 Hz. Liefert (Gesang, Begleitung) gleicher Form."""
+def separate(mix: np.ndarray, progress=None, denoise: bool = False, model: str = 'gesang') -> tuple[np.ndarray, np.ndarray]:
+    """mix: [2, n] Stereo mit 44100 Hz. Liefert (Stimme, Rest) gleicher Form.
+    model='gesang': alle Stimmen vs. Begleitung; model='lead': aus der Gesangsspur die Leadstimme vs. Chor."""
     import onnxruntime as ort
     if mix.ndim == 1:
         mix = np.stack([mix, mix])
-    sess = ort.InferenceSession(str(ensure_model()), providers=['CPUExecutionProvider'])
+    _, N_FFT, DIM_F, DIM_T, COMPENSATE = MODELS[model]
+    sess = ort.InferenceSession(str(ensure_model(model)), providers=['CPUExecutionProvider'])
     chunk = HOP * (DIM_T - 1)
     trim = N_FFT // 2
     gen = chunk - 2 * trim
@@ -66,13 +75,15 @@ def separate(mix: np.ndarray, progress=None, denoise: bool = False) -> tuple[np.
         part = mp[:, i:i + chunk]
         if part.shape[1] < chunk:
             part = np.pad(part, ((0, 0), (0, chunk - part.shape[1])))
-        spec = _stft(part)[None]
+        spec = _stft(part, N_FFT, DIM_F)[None]
         pred = sess.run(None, {'input': spec})[0]
         if denoise:
             pred = (pred - sess.run(None, {'input': -spec})[0]) * 0.5
-        wav = _istft(pred[0], chunk)
+        wav = _istft(pred[0], chunk, N_FFT, DIM_F)
         outs.append(wav[:, trim:trim + gen])
         if progress:
             progress((k + 1) / len(steps))
-    vocals = np.concatenate(outs, axis=1)[:, :n] * COMPENSATE
-    return vocals, mix - vocals
+    pred = np.concatenate(outs, axis=1)[:, :n] * COMPENSATE
+    if model == 'lead':   # das Karaoke-Modell liefert den Hintergrundgesang – die Leadstimme ist der Rest
+        return mix - pred, pred
+    return pred, mix - pred

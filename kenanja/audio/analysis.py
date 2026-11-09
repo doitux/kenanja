@@ -68,6 +68,18 @@ def stems(path, progress=None, cache=None) -> tuple[np.ndarray, np.ndarray]:
     return voc, inst
 
 
+def lead_stem(path, voc: np.ndarray, progress=None, cache=None) -> np.ndarray:
+    """Nur die Leadstimme (Chor/Backgroundgesang entfernt) – zwischengespeichert als FLAC."""
+    import soundfile as sf
+    f = work_dir(path, cache) / 'lead.flac'
+    if f.exists():
+        return sf.read(f, dtype='float32')[0].T
+    from .separate import separate
+    lead, _ = separate(voc, progress, model='lead')
+    sf.write(f, lead.T, SR)
+    return lead
+
+
 # ------------------------------------------------------------------ Schläge ----
 
 def track_beats(y_mono: np.ndarray, sr: int = 22050, tempo_hint: Optional[float] = None) -> tuple[np.ndarray, float]:
@@ -266,18 +278,22 @@ def snap_to_key(notes: list['VNote'], key_tpc: int, minor: bool = False) -> None
             n.pitch = r
 
 
-def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09) -> list[VNote]:
-    """Gesangsnoten aus der Gesangsspur: Tonhöhenverlauf (pYIN) + Einsätze -> Noten."""
+def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09, jump: float = 0.6,
+                onset_delta: float = 0.08, weak: float = 0.35) -> list[VNote]:
+    """Gesangsnoten aus der (Lead-)Gesangsspur: Tonhöhenverlauf (pYIN) + Einsätze -> Noten."""
     import librosa
     hop = 256
+    rms = librosa.feature.rms(y=voc_mono22, frame_length=2048, hop_length=hop)[0]
+    t = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
     f0, voiced, prob = librosa.pyin(voc_mono22, fmin=75, fmax=1000, sr=sr, frame_length=2048, hop_length=hop,
                                     fill_na=np.nan)
-    rms = librosa.feature.rms(y=voc_mono22, frame_length=2048, hop_length=hop)[0]
-    thr = max(0.012, np.percentile(rms, 30))
-    t = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=hop)
+    n = min(len(f0), len(rms))
+    f0, voiced, rms, t = f0[:n], voiced[:n], rms[:n], t[:n]
     midi = librosa.hz_to_midi(f0)
+    thr = max(0.012, np.percentile(rms, 30))
+    f0 = midi
     onset_frames = set(librosa.onset.onset_detect(y=voc_mono22, sr=sr, hop_length=hop, backtrack=True,
-                                                  units='frames', delta=0.08))
+                                                  units='frames', delta=onset_delta))
     notes: list[VNote] = []
     cur, cur_start, cur_vals = None, 0, []
 
@@ -303,7 +319,7 @@ def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09) 
             cur, cur_start, cur_vals = m, i, [m]
             continue
         med = float(np.median(cur_vals[-6:]))
-        new_note = abs(m - med) > 0.8 and (len(cur_vals) >= 4)
+        new_note = abs(m - med) > jump and (len(cur_vals) >= 4)
         if i in onset_frames and len(cur_vals) >= 4:
             new_note = True
         if new_note:
@@ -321,7 +337,7 @@ def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09) 
         keep = []
         for a, b in phrases(notes):
             ph_str = float(np.median([n.strength for n in notes[a:b]]))
-            if ph_str >= 0.35 * med:
+            if ph_str >= weak * med:
                 keep += notes[a:b]
         notes = keep
     # Oktavsprünge (pYIN-Fehler) glätten
@@ -330,6 +346,35 @@ def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09) 
         if abs(b - a) >= 11 and abs(b - c) >= 11 and abs(a - c) <= 5:
             notes[k].pitch += 12 if b < a else -12
     return notes
+
+
+def merge_scoops(notes: list[VNote], max_dur: float = 0.27, max_iv: int = 3, gap: float = 0.07) -> list[VNote]:
+    """Sänger schleifen Töne oft von unten an oder lassen sie am Ende abfallen. Die Tonhöhenerkennung macht
+    daraus eine kurze Extranote mit falschem Ton. Solche Ansätze werden der Zielnote zugeschlagen."""
+    out: list[VNote] = []
+    notes = sorted(notes, key=lambda n: n.start)
+    i = 0
+    while i < len(notes):
+        n = notes[i]
+        d = n.end - n.start
+        if i + 1 < len(notes):
+            m = notes[i + 1]
+            if (d <= max_dur and m.start - n.end <= gap and 1 <= abs(m.pitch - n.pitch) <= max_iv
+                    and (m.end - m.start) >= 0.8 * d):
+                m.start = n.start
+                i += 1
+                continue
+        if out:
+            p = out[-1]
+            nxt_gap = (notes[i + 1].start - n.end) if i + 1 < len(notes) else 9.0
+            if (d <= 0.16 and n.start - p.end <= gap and 1 <= abs(n.pitch - p.pitch) <= 4 and nxt_gap > 0.08
+                    and (p.end - p.start) > 2 * d):
+                p.end = n.end
+                i += 1
+                continue
+        out.append(n)
+        i += 1
+    return out
 
 
 # ------------------------------------------------------------------ Raster ----
@@ -760,7 +805,10 @@ def _fix_octaves(notes: list[VNote]) -> None:
     target = float(np.median([n.pitch for n in notes]))
     for a, b in phrases(notes):
         pm = float(np.median([n.pitch for n in notes[a:b]]))
-        sh = int(round((target - pm) / 12)) * 12
+        # nur verschieben, wenn die Phrase klar in einer anderen Lage liegt (Männer- statt Frauenstimme);
+        # höhere/tiefere Teile der Melodie selbst (z. B. Bridge eine Sexte höher) bleiben, wie sie sind
+        dev = target - pm
+        sh = 12 * int(np.sign(dev)) * int((abs(dev) + 2.5) // 12) if abs(dev) > 9.5 else 0
         if sh:
             for n in notes[a:b]:
                 n.pitch += sh
@@ -823,8 +871,16 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     grid = Grid(beats, phase, bpb)
     rep['takt'] = f'{bpb}/4'
     rep['taktart_werte'] = meter_scores
-    step('Melodie', 0.65)
-    vnotes = vocal_notes(voc22)
+    step('Leadstimme vom Chor trennen', 0.62)
+    try:
+        lead = lead_stem(path, voc, (lambda f: progress('Leadstimme vom Chor trennen', 0.62 + 0.1 * f))
+                         if progress else None, cache)
+        lead22 = librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050)
+    except Exception as e:   # Modell nicht ladbar o. ä.: mit der ganzen Gesangsspur weiter
+        rep['leadstimme'] = f'nicht getrennt ({type(e).__name__})'
+        lead22 = voc22
+    step('Melodie', 0.74)
+    vnotes = merge_scoops(vocal_notes(lead22))
     snap_to_key(vnotes, key_tpc, minor)
     octv = _norm_octave(vnotes)
     for n in vnotes:

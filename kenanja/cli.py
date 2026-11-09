@@ -116,6 +116,7 @@ def check():
         print('Akkordmodell:', ensure_weights())
         from .audio.separate import ensure_model
         print('Trennmodell :', ensure_model())
+        print('Leadstimme  :', ensure_model('lead'))
     except Exception as e:
         ok = False
         print('Modelle     : Download fehlgeschlagen –', e)

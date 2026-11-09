@@ -99,8 +99,11 @@ Gemessen an echten Songs der Band:
 
 * Tempo, Taktart und Tonart: zuverlässig.
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
-* Melodie: Einsätze werden fast alle gefunden, die Tonhöhe stimmt bei rund drei Vierteln der Noten –
-  das Leadsheet daher in MuseScore durchsehen.
+* Melodie: Kenanja trennt zuerst die Leadstimme vom Chor/Backgroundgesang, fasst angeschliffene Töne
+  mit ihrer Zielnote zusammen und hält die Melodie in einer Lage. Gemessen an Renés Leadsheets
+  (Licht und Heil, Souverän): rund 80 % der Noten haben den richtigen Ton in der richtigen Oktave,
+  gut drei Viertel sitzen zusätzlich auf der richtigen Sechzehntel. Das Leadsheet daher in MuseScore
+  durchsehen – vor allem Tonwiederholungen und Verzierungen.
 * Text: wird zeilenweise den Gesangsphrasen zugeordnet. Optional (nur bei der Installation aus dem
   Quellcode, nicht in der AppImage) verankert Whisper (Spracherkennung) den Text zusätzlich an den gesungenen Wörtern.
   Passt der eingefügte Text nicht zur Aufnahme (z. B. andere Version), warnt Kenanja.
@@ -109,7 +112,7 @@ Gemessen an echten Songs der Band:
 
 * Akkorderkennung: **BTC** – Bi-directional Transformer for Chord recognition (Park et al., ISMIR 2019), MIT-Lizenz,
   https://github.com/jayg996/BTC-ISMIR19 – hier ohne PyTorch in numpy nachgerechnet.
-* Gesangstrennung: **UVR-MDX-NET Voc_FT** aus dem Ultimate-Vocal-Remover-Projekt (ONNX), https://github.com/TRvlvr/model_repo
+* Gesangstrennung: **UVR-MDX-NET Voc_FT**, Leadstimme vom Chor: **UVR_MDXNET_KARA_2** – beide aus dem Ultimate-Vocal-Remover-Projekt (ONNX), https://github.com/TRvlvr/model_repo
 * Tonhöhe: pYIN (librosa) · Silbentrennung: Pyphen · Noten: music21, MuseScore · Text: LibreOffice
 * Transponieren: **Rubber Band** (R3-Engine, Formanterhalt) · optional Spracherkennung: faster-whisper
 
