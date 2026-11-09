@@ -68,6 +68,25 @@ def stems(path, progress=None, cache=None) -> tuple[np.ndarray, np.ndarray]:
     return voc, inst
 
 
+def lead_or_group(voc22: np.ndarray, lead22: np.ndarray, sr: int = 22050) -> np.ndarray:
+    """Leadstimme, aber wo das Karaoke-Modell alles als „Chor“ wegnimmt (Gruppen- oder Unisono-Gesang,
+    z. B. „nur Frauen“), die ganze Gesangsspur – sonst fehlen dort Melodie und Text."""
+    from scipy.ndimage import uniform_filter1d
+    n = min(len(voc22), len(lead22))
+    v, l = voc22[:n], lead22[:n]
+    hop = 512
+    def db(x):
+        e = np.sqrt(uniform_filter1d(x.astype(np.float64) ** 2, hop)[::hop] + 1e-12)
+        return 20 * np.log10(e)
+    dv, dl = db(v), db(l)
+    k = max(1, int(0.6 * sr / hop))
+    dv, dl = uniform_filter1d(dv, k), uniform_filter1d(dl, k)
+    # Anteil Lead: 1, wenn die Leadspur höchstens 6 dB leiser als die Gesangsspur ist; 0 ab 15 dB leiser
+    w = np.clip((dl - dv + 15) / 9, 0, 1)
+    w = np.interp(np.arange(n), np.arange(len(w)) * hop, w)
+    return (w * l + (1 - w) * v).astype(np.float32)
+
+
 def lead_stem(path, voc: np.ndarray, progress=None, cache=None) -> np.ndarray:
     """Nur die Leadstimme (Chor/Backgroundgesang entfernt) – zwischengespeichert als FLAC."""
     import soundfile as sf
@@ -654,10 +673,18 @@ def align_lines(line_syl_counts: list[int], notes: list[VNote], allow_skip: bool
     tail = [0.0] * (N + 1)
     for j in range(N - 1, -1, -1):
         tail[j] = tail[j + 1] + skipc[j] * 0.35   # Wiederholungen am Schluss (Outro) sind häufig
-    i = min(range(N + 1), key=lambda j: D[L][j] + tail[j])
     res = [None] * L
+    # Passen nicht alle Zeilen auf die Noten (z. B. Text länger als die Aufnahme, wenig erkannte Noten),
+    # werden so viele Zeilen wie möglich zugeordnet; die übrigen bleiben ohne Noten.
     l = L
+    while l > 0 and min(D[l]) >= INF:
+        l -= 1
+    if l == 0:
+        return res
+    i = min(range(N + 1), key=lambda j: D[l][j] + tail[j])
     while l > 0 and i >= 0:
+        if P[l][i] is None:
+            break
         kind, a = P[l][i]
         if kind == 'line':
             res[l - 1] = (a, i)
@@ -823,16 +850,22 @@ def _fix_octaves(notes: list[VNote]) -> None:
             notes[k].pitch += 12
 
 
-def _norm_octave(notes: list[VNote]) -> int:
+def _norm_octave(notes: list[VNote], lo: int = 57, hi: int = 74) -> int:
+    """Leadsheet-Lage: die Oktave, in der die Melodie (nach Dauer gewichtet) am besten in den üblichen
+    Notationsbereich a … d'' (Gemeinde-Lage) passt. Robuster als „Median in einer festen Oktave“,
+    der bei Melodien um g'/a' herum zwischen zwei Oktaven kippt."""
     if not notes:
         return 0
-    med = float(np.median([n.pitch for n in notes]))
-    shift = 0
-    while med + shift < 61:
-        shift += 12
-    while med + shift > 73:
-        shift -= 12
-    return shift
+    p = np.array([n.pitch for n in notes], dtype=float)
+    w = np.array([max(0.05, n.end - n.start) for n in notes])
+    best, arg = None, 0
+    for sh in (-36, -24, -12, 0, 12, 24, 36):
+        q = p + sh
+        out = np.clip(lo - q, 0, None) + np.clip(q - hi, 0, None)
+        cost = float((out * w).sum())
+        if best is None or cost < best - 1e-9:
+            best, arg = cost, sh
+    return arg
 
 
 def _label_counter(labels):
@@ -875,7 +908,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     try:
         lead = lead_stem(path, voc, (lambda f: progress('Leadstimme vom Chor trennen', 0.62 + 0.1 * f))
                          if progress else None, cache)
-        lead22 = librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050)
+        lead22 = lead_or_group(voc22, librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050))
     except Exception as e:   # Modell nicht ladbar o. ä.: mit der ganzen Gesangsspur weiter
         rep['leadstimme'] = f'nicht getrennt ({type(e).__name__})'
         lead22 = voc22
@@ -947,6 +980,13 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         rest = [n for n in vnotes if id(n) not in keep and not any(abs(n.start - m.start) < 0.02 for m in new_notes)]
         vnotes = sorted(new_notes + rest, key=lambda n: n.start)
         rep['zeilen'] = f'{sum(1 for r in ranges if r)} von {len(lines)} Zeilen zugeordnet'
+        # Lage nur nach den gesungenen Textnoten nachjustieren (Ad-libs, Instrumente im Outro o. ä. zählen nicht)
+        sung = [n for n in vnotes if id(n) in note_syl]
+        if len(sung) >= 8:
+            d_oct = _norm_octave(sung)
+            if d_oct:
+                for n in vnotes:
+                    n.pitch += d_oct
 
     # Takte
     step('Noten setzen', 0.88)
