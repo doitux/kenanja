@@ -39,7 +39,7 @@ In MuseScore korrigierte Leadsheets lassen sich wieder **importieren** – danac
 
 ## Installation (Kubuntu/Ubuntu 22.04 und neuer)
 
-Kenanja gibt es – wie Pulsecut – als fertiges Programm (**AppImage**, eine einzige Datei) unter
+Kenanja gibt es als fertiges Programm (**AppImage**, eine einzige Datei) unter
 [Releases → Testversion](https://github.com/doitux/kenanja/releases/tag/nightly). Einmal die Hilfsprogramme
 installieren, AppImage herunterladen, ausführbar machen, starten:
 
@@ -58,8 +58,7 @@ Aus dem Quellcode (Entwicklung): `git clone https://github.com/doitux/kenanja.gi
 richtet Kenanja in einer Python-Umgebung unter `~/.local/share/kenanja` ein. Die AppImage selbst wird bei jedem
 Stand auf `main` automatisch gebaut und getestet (`packaging/`, `.github/workflows/ci.yml`).
 
-Start: im Startmenü **Kenanja** oder im Terminal `kenanja` – es öffnet sich ein eigenes Fenster (Qt WebEngine,
-wie bei Pulsecut). Ein zweiter Start holt das offene Fenster nach vorne. Lieber im normalen Browser: `kenanja web`
+Start: im Startmenü **Kenanja** oder im Terminal `kenanja` – es öffnet sich ein eigenes Fenster (Qt WebEngine). Ein zweiter Start holt das offene Fenster nach vorne. Lieber im normalen Browser: `kenanja web`
 (oder Rechtsklick auf den Startmenü-Eintrag → „Im Browser öffnen“). Bleibt das Fenster weiß, schaltet Kenanja
 selbst auf eine einfachere Grafikausgabe um.
 
@@ -67,7 +66,7 @@ selbst auf eine einfachere Grafikausgabe um.
 werden dann mit verschoben). Jeder Song bekommt einen Ordner mit seinem Namen:
 
 ```
-~/Projekte/Kenanja/Draw Me Close/
+~/Projekte/Kenanja/Mein Song/
 ├── projekt.json, song.kenanja.json, liedtext.txt   Bearbeitungsstand
 ├── Original/    dein MP3/WAV bzw. die importierte MuseScore-Datei
 ├── Analyse/     Zwischenspeicher (getrennter Gesang) – darf gelöscht werden
@@ -85,25 +84,28 @@ werden dann mit verschoben). Jeder Song bekommt einen Ordner mit seinem Namen:
 ### Kommandozeile
 
 ```bash
-kenanja analyse song.mp3 --text liedtext.txt --titel "Draw Me Close" --autoren "Kelly Carpenter"
+kenanja analyse song.mp3 --text liedtext.txt --titel "Mein Song" --autoren "Vorname Nachname"
 kenanja import leadsheet.mscz
 kenanja tonart song.kenanja.json
-kenanja erzeugen song.kenanja.json -o ~/Band/Songs/Draw\ Me\ Close --transponieren -3 --bitrate 320 --band "S&L"
+kenanja erzeugen song.kenanja.json -o ~/Band/Songs/Mein\ Song --transponieren -3 --bitrate 320 --band "Band"
 kenanja pruefen
 ```
 
 ## Wie gut ist das?
 
 Kenanja liefert einen **Entwurf**, den man in wenigen Minuten nachbessert – keinen fertigen Satz.
-Gemessen an echten Songs der Band:
+Erfahrungswerte aus Tests mit echten Aufnahmen:
 
 * Tempo, Taktart und Tonart: zuverlässig.
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
 * Melodie: Kenanja trennt zuerst die Leadstimme vom Chor/Backgroundgesang, fasst angeschliffene Töne
-  mit ihrer Zielnote zusammen und hält die Melodie in einer Lage. Gemessen an Renés Leadsheets
-  (Licht und Heil, Souverän): rund 80 % der Noten haben den richtigen Ton in der richtigen Oktave,
+  mit ihrer Zielnote zusammen und hält die Melodie in einer Lage. Im Vergleich mit von Hand
+  gesetzten Leadsheets haben rund 80 % der Noten den richtigen Ton in der richtigen Oktave,
   gut drei Viertel sitzen zusätzlich auf der richtigen Sechzehntel. Das Leadsheet daher in MuseScore
   durchsehen – vor allem Tonwiederholungen und Verzierungen.
+* Tonart-Wahl: Die höchsten und tiefsten Töne entscheiden über die Zieltonart. Unter „Stimmen & Tonart“
+  listet Kenanja genau diese Stellen; jede lässt sich anhören (getrennte Leadstimme und erkannter Ton)
+  und mit einem Klick korrigieren oder als Verzierung von der Wertung ausnehmen.
 * Text: wird zeilenweise den Gesangsphrasen zugeordnet. Optional (nur bei der Installation aus dem
   Quellcode, nicht in der AppImage) verankert Whisper (Spracherkennung) den Text zusätzlich an den gesungenen Wörtern.
   Passt der eingefügte Text nicht zur Aufnahme (z. B. andere Version), warnt Kenanja.

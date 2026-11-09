@@ -1063,6 +1063,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     # Formteile
     step('Formteile', 0.94)
     sections = _make_sections(bars, blocks, line_ranges, grid, note_syl, beats)
+    rep['unsicher'] = mark_outliers(sections)
     song = Song(title=title or Path(path).stem, authors=authors, key=key_name(key_tpc, minor),
                 tempo=round(tempo), sections=sections, audio=str(path))
     from ..lyrics import assign_pickups, auto_lines, apply_text
@@ -1092,6 +1093,35 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     song.notes['analyse'] = rep
     step('Fertig', 1.0)
     return AnalysisResult(song, rep)
+
+
+def mark_outliers(sections: list[Section], max_dur=F(1, 2), jump: int = 3) -> int:
+    """Kurze Töne, die deutlich über bzw. unter beiden Nachbarn liegen (typisch: Anschleifen von weit unten,
+    Kickser, Oktavfehler der Tonhöhenerkennung), als unsicher markieren. Sie bleiben im Leadsheet stehen,
+    zählen aber nicht für Spitzentöne und Tonart-Vorschlag."""
+    seq = []   # (Note, Abschnitt, Takt, absolute Position in Vierteln)
+    pos = F(0)
+    for sec in sections:
+        for bi, b in enumerate(sec.bars):
+            for n in b.melody:
+                if n.pitch is not None:
+                    seq.append((n, pos + n.onset))
+            pos += b.length
+    marked = 0
+    for i, (n, at) in enumerate(seq):
+        if n.dur > max_dur:
+            continue
+        nb = []
+        if i > 0 and at - (seq[i - 1][1] + seq[i - 1][0].dur) <= 1:
+            nb.append(seq[i - 1][0].pitch)
+        if i + 1 < len(seq) and seq[i + 1][1] - (at + n.dur) <= 1:
+            nb.append(seq[i + 1][0].pitch)
+        if not nb:
+            continue
+        if n.pitch >= max(nb) + jump or n.pitch <= min(nb) - jump:
+            n.unsicher = True
+            marked += 1
+    return marked
 
 
 def _fill_rests(bar: Bar):

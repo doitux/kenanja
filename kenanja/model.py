@@ -23,7 +23,7 @@ from .theory import ChordSymbol, best_key_for_shift, key_tpc_from_name, key_name
 SECTION_KINDS = ['intro', 'verse', 'prechorus', 'chorus', 'bridge', 'interlude', 'solo', 'outro',
                  'tag', 'choral', 'ending', 'other']
 
-# Standardkürzel aus Renés Chord-Sheets
+# übliche Kürzel auf Chord-Sheets
 BAND_INSTRUMENTS = ['Keys', 'Synth', 'Piano', 'AGit', 'EGit', 'LEGit', 'REGit', 'Bass', 'Drums',
                     'LVoc', 'BVoc', '2Voc', 'Strings', 'Violin', 'Cello', 'Orgel']
 
@@ -37,6 +37,7 @@ class Note:
     lyrics: dict = field(default_factory=dict)   # {Strophe(int): (Silbe, syllabic)}
     tie: bool = False                # an nächste Note gebunden
     extra: list = field(default_factory=list)    # weitere Töne (Doppelgriffe): [(pitch, tpc)]
+    unsicher: bool = False           # Erkennung zweifelhaft (z. B. kurzer Ausreißer) – zählt kaum für die Tonart
 
     @property
     def is_rest(self) -> bool:
@@ -237,15 +238,17 @@ def iter_sung_notes(song: Song, section_filter=None):
     for item, sec in song.ordered_form():
         if section_filter and not section_filter(item, sec):
             continue
-        in_word = False
+        tied = None      # Tonhöhe, die per Haltebogen weiterklingt
         for bi, bar in enumerate(sec.bars):
             for n in bar.melody:
                 if n.pitch is None:
-                    in_word = False
+                    tied = None
                     continue
-                if n.lyrics or in_word:
+                if n.lyrics or tied == n.pitch:
                     yield item, sec, bi, n
-                in_word = n.tie
+                    tied = n.pitch if n.tie else None
+                else:
+                    tied = None
 
 
 def chord_at(bar: Bar, onset: Fraction, prev: Optional[str] = None) -> Optional[str]:

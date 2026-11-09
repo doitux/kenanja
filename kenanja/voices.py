@@ -90,6 +90,8 @@ def ambitus(song: Song, shift: int = 0, section_filter=None) -> dict[int, PitchS
     old_tpc, _ = song.key_tpc()
     new_tpc = best_key_for_shift(old_tpc, shift)
     for item, sec, bi, n in iter_sung_notes(song, section_filter):
+        if n.unsicher:        # zweifelhafte Ausreißer zählen für Umfang und Spitzentöne nicht
+            continue
         p = n.pitch + shift
         tpc = (n.tpc + new_tpc - old_tpc) if n.tpc is not None else spell_pitch(p, new_tpc)
         st = stats.setdefault(p, PitchStat(p, tpc))
@@ -159,6 +161,8 @@ def _notes_by_role(song: Song, profiles: dict[str, VoiceProfile], default_singer
     for item, sec, bi, n in iter_sung_notes(song):
         label = item.label or sec.label
         singers = item.singers or list(default_singers)
+        if n.unsicher:        # zweifelhafte Ausreißer zählen für die Tonart-Wahl nicht
+            continue
         for sid in singers:
             if sid in profiles:
                 roles[sid].append((n.pitch, n.dur, bool(n.lyrics), label))

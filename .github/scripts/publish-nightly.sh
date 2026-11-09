@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legt die neueste Testversion in die Vorabversion „nightly“ (wie bei Pulsecut): Tag „nightly“ zeigt auf den
+# Legt die neueste Testversion in die Vorabversion „nightly“: Tag „nightly“ zeigt auf den
 # gebauten Stand, die AppImage trägt Build-Nummer und Commit im Namen, ältere Nightly-AppImages werden entfernt.
 set -euo pipefail
 repo="$GITHUB_REPOSITORY"; tag="nightly"; app="$1"; sums="$2"; name="$(basename "$app")"

@@ -1,4 +1,4 @@
-"""Chor-Textblatt: eine Seite, nur Text, mit Ausdrucksanweisungen im Farbcode von René:
+"""Chor-Textblatt: eine Seite, nur Text, mit Ausdrucksanweisungen in einem festen Farbcode:
   rot   = leiser / zurückhaltend      grün = lauter / offener
   lila  = nicht mitsingen (Solo)      grau = Text, den der Chor nicht singt
 """

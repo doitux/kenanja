@@ -251,7 +251,7 @@ def _xml_kind(q: str) -> str:
 
 
 def insert_harmonies(xml_path, lbars: list[LBar], part_index: int = 0) -> None:
-    """Fügt die Akkordsymbole in die erste Stimme (Leadsheet) ein – exakt mit Renés Schreibweise."""
+    """Fügt die Akkordsymbole in die erste Stimme (Leadsheet) ein – exakt in der Schreibweise des Chord-Sheets."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
     parts = root.findall('part')

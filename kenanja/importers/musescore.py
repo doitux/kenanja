@@ -332,7 +332,7 @@ def import_musescore(path, lead_staff: int | None = None) -> Song:
             if d.get('texts'):
                 bar.texts += [f'{name}: {t}' for t in d['texts']]
         cur.bars.append(bar)
-    # Nummern nur, wenn ein Abschnittstyp mehrfach vorkommt (wie auf Renés Blättern)
+    # Nummern nur, wenn ein Abschnittstyp mehrfach vorkommt (wie auf üblichen Liedblättern)
     from collections import Counter
     cnt = Counter(s.notes_label for s in sections)
     for s in sections:

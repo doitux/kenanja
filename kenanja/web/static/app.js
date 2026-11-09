@@ -244,6 +244,7 @@ async function tabStimmen() {
   window.PROFS = profs;
   const singers = profs.filter(p => !p.is_congregation), u = keys.umfang || {};
   $('#tab').innerHTML = `
+  <div class="card" id="spitzen"><h3>Spitzentöne prüfen</h3><p class="muted small">Lädt …</p></div>
   <div class="grid2">
    <div class="card"><h3>Tonumfang der Melodie (in ${esc(P.song.target_key)})</h3>
     ${u.tiefster ? `<p><b>${esc(u.tiefster)} – ${esc(u.hoechster)}</b> (${u.halbtoene} Halbtöne), Hauptlage <b>${esc(u.hauptlage)}</b></p>
@@ -272,7 +273,47 @@ async function tabStimmen() {
      <td>${p.is_congregation ? '' : `<button class="small danger" onclick="PROFS.splice(${i},1);saveProfiles(true)">✕</button>`}</td></tr>`).join('')}
    </table><div class="row" style="margin-top:10px"><button onclick="PROFS.push({id:'',name:'Neue Person',comfort_low:'a',comfort_high:\"c''\",limit_low:'g',limit_high:\"d''\",weak_low:'',note:'',is_congregation:false});saveProfiles(false)">Person hinzufügen</button>
    <button class="primary" onclick="saveProfiles(true)">Profile speichern</button></div></div>`;
+  loadExtremes().catch(e => { $('#spitzen').innerHTML = '<h3>Spitzentöne prüfen</h3><p class="muted small">' + esc(e.message) + '</p>'; });
 }
+// Spitzentöne: die wenigen Töne, die über die Tonart entscheiden – anhören und bei Bedarf korrigieren
+let XT = null, ACTX = null;
+async function loadExtremes() {
+  XT = await api(`${pu(P.id)}/spitzentoene`);
+  const row = (g, gi, side) => `<div class="xt ${g.unsicher ? 'muted' : ''}" style="padding:6px 0;border-bottom:1px solid var(--line)">
+    <div><b style="font-size:1.1em">${esc(g.ton)}</b> <span class="small">${g.anzahl}×${g.unsicher ? ' · zählt nicht (unsicher)' : ''}</span></div>
+    <div class="small">${g.stellen.map((o, oi) => (oi === 6 ? `<details style="display:inline"><summary class="muted" style="display:inline;cursor:pointer">+ ${g.stellen.length - 6} weitere</summary>` : '') + `<span class="xstelle" style="${o.unsicher ? 'opacity:.55' : ''}">
+      <span class="xl" title="${o.t0.toFixed(1)} s">${esc(o.teil)} T.${o.takt + 1} „${esc(o.text)}“</span>
+      <button class="small" title="Leadstimme an dieser Stelle anhören" onclick="playSnip(${o.t0},${o.t1})">▶</button>
+      <button class="small" title="erkannten Ton ${esc(o.ton)} vorspielen" onclick="playTone(${o.midi})">♪</button>
+      <select class="small" onchange="fixTon('${side}',${gi},${oi},this.value)" title="korrigieren">
+        <option value="">stimmt</option><option value="1">½ höher</option><option value="-1">½ tiefer</option>
+        <option value="2">1 höher</option><option value="-2">1 tiefer</option>
+        <option value="12">Oktave höher</option><option value="-12">Oktave tiefer</option>
+        <option value="x" ${o.unsicher ? 'selected' : ''}>nicht werten</option></select></span>`).join('')}${g.stellen.length > 6 ? '</details>' : ''}</div></div>`;
+  $('#spitzen').innerHTML = `<h3>Spitzentöne prüfen <span class="muted small">(im Original, Tonart ${esc(XT.tonart)} – so wie du es hörst)</span></h3>
+   <p class="muted small" style="margin-top:0">Diese Töne entscheiden über die Zieltonart. ▶ spielt die getrennte Leadstimme an der Stelle, ♪ den erkannten Ton.
+   Stimmt etwas nicht, hier korrigieren – die Vorschläge rechnen sofort neu. „nicht werten“ für Verzierungen, Kickser oder Ad-libs.</p>
+   <div class="grid2"><div><h4 style="margin:4px 0">Höchste</h4>${XT.hoch.map((g, i) => row(g, i, 'hoch')).join('')}</div>
+   <div><h4 style="margin:4px 0">Tiefste</h4>${XT.tief.map((g, i) => row(g, i, 'tief')).join('')}</div></div>`;
+}
+function playSnip(t0, t1) { const a = new Audio(`${pu(P.id)}/schnipsel?t0=${t0}&t1=${t1}`); a.play(); }
+function playTone(midi) {
+  ACTX = ACTX || new (window.AudioContext || window.webkitAudioContext)();
+  const f = 440 * Math.pow(2, (midi - 69) / 12), t = ACTX.currentTime, g = ACTX.createGain();
+  g.connect(ACTX.destination); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.25, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+  [[1, 1], [2, 0.35], [3, 0.15]].forEach(([h, a]) => { const o = ACTX.createOscillator(), og = ACTX.createGain();
+    o.frequency.value = f * h; og.gain.value = a; o.connect(og); og.connect(g); o.start(t); o.stop(t + 1.5); });
+}
+async function fixTon(side, gi, oi, v) {
+  const o = XT[side][gi].stellen[oi];
+  const body = {sid: o.sid, takt: o.takt, idx: o.idx};
+  if (v === 'x') body.unsicher = true; else if (v === '') body.unsicher = false; else body.midi = o.midi + (+v);
+  await api(`${pu(P.id)}/ton`, {method: 'PUT', body});
+  const d = await api(pu(P.id)); P.song = d.song;
+  tabStimmen();
+}
+
 function toggleSinger(r, id, on) { const s = P.song.form[r].singers; if (on && !s.includes(id)) s.push(id); if (!on) P.song.form[r].singers = s.filter(x => x !== id); }
 async function saveProfiles(store) {
   document.querySelectorAll('#proftab tr[data-i]').forEach(tr => { const p = PROFS[+tr.dataset.i]; if (!p) return; p.name = $('.pn', tr).value;

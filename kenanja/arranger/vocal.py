@@ -1,5 +1,5 @@
 """Nebenstimmen für Sänger und Chorsatz (SATB), homorhythmisch zur Melodie –
-wie in Renés Dateien (Holy Forever: untere Stimme meist eine Terz unter der Melodie,
+wie in üblichen Lobpreis-Arrangements (untere Stimme meist eine Terz unter der Melodie,
 obere Terz/Quarte darüber; SATB im gleichen Rhythmus wie die Melodie).
 """
 from __future__ import annotations

@@ -5,7 +5,7 @@
   kenanja analyse SONG.mp3 [--text liedtext.txt] [--titel …] [--autoren …] [-o song.kenanja.json]
   kenanja import LEADSHEET.mscz [-o song.kenanja.json]
   kenanja tonart song.kenanja.json
-  kenanja erzeugen song.kenanja.json [-o Ausgabeordner] [--transponieren N] [--bitrate 256] [--band S&L]
+  kenanja erzeugen song.kenanja.json [-o Ausgabeordner] [--transponieren N] [--bitrate 256] [--band NAME]
   kenanja pruefen             zeigt, ob MuseScore, LibreOffice, Rubber Band und die Modelle bereit sind
   kenanja deinstallieren      entfernt Kenanja restlos (Projekte bleiben; mit --alles auch die Projekte)
 """

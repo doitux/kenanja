@@ -1,4 +1,4 @@
-"""Streicher-Arrangeur nach Renés Stil (aus seinen Partituren abgeleitet):
+"""Streicher-Arrangeur im Stil typischer Lobpreis-Arrangements:
 
 * Aufbau über den Song: Intro und erste Strophe schweigen die Streicher („1. x tacet“),
   sie kommen nach und nach dazu und sind im zurückgenommenen Schluss-Chorus wieder raus.
@@ -333,7 +333,7 @@ def _low_voice(role, lb, segs, prev, pl, key_tpc):
                 notes.append(Note(on, dur))
                 continue
         if role == 'pulse' and dur >= 2 and pl.level != 'leicht':
-            # Renés Achtel-Puls: 1/2 – 1 – 1 – 1 – 1/2 (pro 4 Schläge)
+            # Achtel-Puls: 1/2 – 1 – 1 – 1 – 1/2 (pro 4 Schläge)
             t = on
             pattern = [F(1, 2), F(1), F(1), F(1), F(1, 2)]
             for d in pattern:
@@ -475,7 +475,7 @@ def _merge_ties(notes: list[Note]) -> list[Note]:
 
 
 def strings_report(lbars: list[LBar], players: list[Player]) -> dict:
-    """Kurze Statistik (für Tests/Vergleich mit Renés Stimmen)."""
+    """Kurze Statistik (für Tests/Vergleiche)."""
     rep = {}
     for pl in players:
         ps = [n.pitch for lb in lbars for n in lb.parts.get(pl.name, []) if n.pitch is not None]

@@ -1,4 +1,4 @@
-"""Alles für einen Song erzeugen – Ordner und Dateinamen wie in Renés Bandordner:
+"""Alles für einen Song erzeugen – mit einheitlichen Ordner- und Dateinamen:
 
   <Titel> - <Autor>/
       <Titel> - Chordsheet.odt / .pdf
@@ -30,7 +30,7 @@ from .sheets.chordsheet import build_chord_sheet
 from .sheets.choirsheet import build_choir_sheet
 from .sheets.instrument_sheets import build_guitar_sheet, build_piano_sheet
 
-STYLE = Path(__file__).resolve().parent / 'data' / 'stil_rene.mss'
+STYLE = Path(__file__).resolve().parent / 'data' / 'stil.mss'
 
 
 @dataclass
@@ -48,7 +48,7 @@ class ExportOptions:
     practice_audio: bool = True
     part_audio: bool = False          # Übe-Spuren aus MuseScore (Melodie/Geige/Cello)
     bitrate: str = '256'
-    band: str = ''                    # z. B. 'S&L' -> '… - S&L-Ablauf.mp3'
+    band: str = ''                    # z. B. 'Band' -> '… - Band-Ablauf.mp3'
     players: list = field(default_factory=lambda: [Player('Violine', 'Violine', 'mittel'),
                                                     Player('Violoncello', 'Violoncello', 'mittel')])
     style: Optional[str] = None
@@ -59,7 +59,7 @@ def safe(s: str) -> str:
 
 
 def short_author(authors: str) -> str:
-    """'Joy & Markus Fackler, …' -> 'JM.Fackler'; 'Kelly Carpenter' -> 'K.Carpenter' (Renés Ordnerschema)."""
+    """'Anna & Max Muster, …' -> 'AM.Muster'; 'Eva Beispiel' -> 'E.Beispiel'."""
     first = re.split(r'[,/\n;]', authors or '')[0].strip()
     if not first:
         return ''
@@ -77,7 +77,7 @@ def folder_name(song: Song) -> str:
 
 
 def _score_files(song: Song, lbars, parts, base: Path, style, lead_name='Gesang', log=print) -> dict:
-    """MusicXML -> .mscz (mit Renés Stil, exakten Akkordnamen) -> PDF."""
+    """MusicXML -> .mscz (mit Kenanja-Stil, exakten Akkordnamen) -> PDF."""
     out = {}
     xml = base.with_suffix('.musicxml')
     write_musicxml(song, lbars, parts, xml, lead_name=lead_name)

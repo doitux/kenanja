@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Aus einem MP3 Chord-Sheet, Leadsheet, Streicherstimmen, Chor-Textblatt und Übe-Audio für die Lobpreisband erzeugen"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
-authors = [{name = "René Wodrich"}]
+authors = [{name = "doitux"}]
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24", "scipy", "librosa>=0.10", "soundfile", "onnxruntime>=1.16", "music21>=9",

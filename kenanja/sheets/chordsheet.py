@@ -1,4 +1,4 @@
-"""Chord-Sheet im Stil von René: Titel mittig, Autoren rechts kursiv, Abschnitte fett mit
+"""Chord-Sheet: Titel mittig, Autoren rechts kursiv, Abschnitte fett mit
 Besetzungswechseln (+grün / −rot), Akkorde blau über der Silbe (Erweiterungen hochgestellt),
 Instrumentalteile als Taktzeilen. Akkorde werden exakt per Tabstopp auf die Silbe gesetzt;
 wo es eng wird, werden Leerzeichen (bzw. Silbentrennstriche) in den Text eingefügt.

@@ -1,5 +1,5 @@
 """Kleiner, abhängigkeitsfreier ODT-Schreiber (LibreOffice Writer) mit genau den Mitteln,
-die Renés Blätter brauchen: Absätze mit eigenen Tabstopps, farbige/hochgestellte Textstücke,
+die die Blätter brauchen: Absätze mit eigenen Tabstopps, farbige/hochgestellte Textstücke,
 Bilder, 'zusammenhalten' über Seitenumbrüche, PDF-Export über LibreOffice.
 """
 from __future__ import annotations

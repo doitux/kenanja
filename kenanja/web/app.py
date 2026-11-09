@@ -41,7 +41,7 @@ SUB = {'original': 'Original', 'analyse': 'Analyse', 'export': 'Export', 'vorsch
 DEFAULT_SETTINGS = {
     'projektordner': str(Path.home() / 'Projekte' / 'Kenanja'),
     'bandordner': '',            # optional: fertigen Export zusätzlich dorthin kopieren
-    'band': 'S&L',
+    'band': '',
     'bitrate': '256',
     'spieler': [{'name': 'Violine', 'instrument': 'Violine', 'level': 'mittel'},
                 {'name': 'Violoncello', 'instrument': 'Violoncello', 'level': 'mittel'}],
@@ -544,6 +544,125 @@ def keys(pid: str):
     return {'vorschlaege': [fmt(r) for r in res], 'aktuell': fmt(cur),
             'umfang': ambitus_report(song, song.transpose),
             'tauschen': suggest_swaps(song, song.transpose, profs)}
+
+
+def _sung_occurrences(song: Song) -> list[dict]:
+    """Jede gesungene Note (mit Text bzw. per Haltebogen fortgesetzt) mit Zeit im Original."""
+    from ..theory import helmholtz, spell_pitch
+    key_tpc = song.key_tpc()[0]
+    out = []
+    for sec in song.sections:
+        tied = None
+        for bi, bar in enumerate(sec.bars):
+            if bar.audio_start is None:
+                tied = None
+                continue
+            nxt = sec.bars[bi + 1].audio_start if bi + 1 < len(sec.bars) else sec.audio_end
+            dur_s = (nxt - bar.audio_start) if nxt and nxt > bar.audio_start else 60 / (song.tempo or 80) * float(bar.length)
+            per_q = dur_s / float(bar.length)
+            for ni, n in enumerate(bar.melody):
+                if n.pitch is None:
+                    tied = None
+                    continue
+                cont = tied == n.pitch and not n.lyrics
+                if n.lyrics or cont:
+                    t0 = bar.audio_start + float(n.onset) * per_q
+                    syl = n.syllable()
+                    out.append({'sid': sec.id, 'teil': sec.label, 'takt': bi, 'idx': ni, 'midi': n.pitch,
+                                'ton': helmholtz(n.pitch, n.tpc if n.tpc is not None else spell_pitch(n.pitch, key_tpc)),
+                                't0': round(t0, 3), 't1': round(t0 + float(n.dur) * per_q, 3),
+                                'text': syl[0] if syl else '~', 'unsicher': n.unsicher, 'fortsetzung': cont})
+                    tied = n.pitch if n.tie else None
+                else:
+                    tied = None
+    return out
+
+
+@app.get('/api/projekte/{pid}/spitzentoene')
+def extremes(pid: str, anzahl: int = 3):
+    """Die Töne, die über die Tonart entscheiden: die höchsten und tiefsten gesungenen Töne mit allen Stellen."""
+    song = load_song(pid)
+    occ = [o for o in _sung_occurrences(song) if not o['fortsetzung']]
+    sure = sorted({o['midi'] for o in occ if not o['unsicher']})
+
+    def group(pitches):
+        res = []
+        for p in pitches:
+            st = [o for o in occ if o['midi'] == p]
+            res.append({'midi': p, 'ton': st[0]['ton'], 'anzahl': len(st),
+                        'unsicher': all(o['unsicher'] for o in st), 'stellen': st[:12]})
+        return res
+    hi = [p for p in sorted({o['midi'] for o in occ}, reverse=True) if not sure or p >= sure[-min(anzahl, len(sure))]]
+    lo = [p for p in sorted({o['midi'] for o in occ}) if not sure or p <= sure[min(anzahl, len(sure)) - 1]]
+    return {'hoch': group(hi), 'tief': group(lo), 'tonart': song.key}
+
+
+@app.get('/api/projekte/{pid}/schnipsel')
+def snippet(pid: str, t0: float, t1: float, spur: str = 'lead'):
+    """Kurzer Ausschnitt der getrennten Leadstimme (bzw. Gesangsspur) zum Anhören."""
+    import io
+    import numpy as np
+    import soundfile as sf
+    from fastapi.responses import Response
+    from ..audio.analysis import work_dir
+    d = pdir(pid)
+    song = load_song(pid)
+    wd = work_dir(song.audio, sub(d, 'analyse')) if song.audio else None
+    src = None
+    for name in ([f'{spur}.flac'] if spur in ('lead', 'gesang') else []) + ['lead.flac', 'gesang.flac']:
+        if wd and (wd / name).exists():
+            src = wd / name
+            break
+    if src is None and song.audio and Path(song.audio).exists():
+        src = Path(song.audio)
+    if src is None:
+        raise HTTPException(404, 'Keine Audiospur gefunden')
+    info = sf.info(str(src))
+    a, b = max(0.0, t0 - 0.35), min(info.duration, t1 + 0.35)
+    y, sr = sf.read(str(src), start=int(a * info.samplerate), stop=int(b * info.samplerate), dtype='float32',
+                    always_2d=True)
+    y = y.mean(1)
+    peak = float(np.abs(y).max()) or 1.0
+    y = y / peak * 0.8
+    f = min(len(y) // 4, int(0.03 * sr))
+    if f > 0:
+        y[:f] *= np.linspace(0, 1, f)
+        y[-f:] *= np.linspace(1, 0, f)
+    buf = io.BytesIO()
+    sf.write(buf, y, sr, format='WAV', subtype='PCM_16')
+    return Response(buf.getvalue(), media_type='audio/wav')
+
+
+@app.put('/api/projekte/{pid}/ton')
+def fix_note(pid: str, data: dict):
+    """Erkannten Ton korrigieren: neue Tonhöhe oder „nicht werten“ (unsicher). Gebundene Fortsetzungen gehen mit."""
+    from ..theory import spell_pitch
+    song = load_song(pid)
+    sec = song.section(data['sid'])
+    bar = sec.bars[int(data['takt'])]
+    n = bar.melody[int(data['idx'])]
+    old = n.pitch
+    chain = [n]
+    bi, ni = int(data['takt']), int(data['idx'])
+    while chain[-1].tie:      # Haltebögen mitnehmen
+        ni += 1
+        if ni >= len(sec.bars[bi].melody):
+            bi, ni = bi + 1, 0
+            if bi >= len(sec.bars) or not sec.bars[bi].melody:
+                break
+        m = sec.bars[bi].melody[ni]
+        if m.pitch != old:
+            break
+        chain.append(m)
+    for m in chain:
+        if 'midi' in data:
+            m.pitch = int(data['midi'])
+            m.tpc = spell_pitch(m.pitch, song.key_tpc()[0])
+            m.unsicher = False
+        if 'unsicher' in data:
+            m.unsicher = bool(data['unsicher'])
+    save_song(pid, song)
+    return {'ok': True}
 
 
 # ------------------------------------------------------------------ Erzeugen ----
