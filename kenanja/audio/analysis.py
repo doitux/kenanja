@@ -950,7 +950,8 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             assign=lambda sy, ns: G.assign_syllables_sung(
                 sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
                                    VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
-            labels=labels, texts=lines, old_ranges=old_ranges)
+            labels=labels, texts=lines, old_ranges=old_ranges,
+            scale={(tpc_pc(key_tpc) + d) % 12 for d in ((0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11))})
         rep['zuordnung'] = gmode
         rep['_rohnoten'] = len(vm)
         vnotes = []
@@ -966,6 +967,19 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         octv = _norm_octave(vnotes)
         for n in vnotes:
             n.pitch += octv
+        # immer Frauenlage: Zeilen, die (z. B. von einem Mann) eine Oktave tiefer/höher gesungen wurden, einzeln holen
+        by_line: dict[int, list] = {}
+        for vn in vnotes:
+            by_line.setdefault(note_syl[id(vn)].line, []).append(vn)
+        song_med = float(np.median([vn.pitch for vn in vnotes])) if vnotes else 66.0
+        for ln_notes in by_line.values():
+            # nur ganze Zeilen, die klar eine Oktave neben dem Rest liegen (Männerstimme o. ä.)
+            med = float(np.median([vn.pitch for vn in ln_notes]))
+            dev = song_med - med
+            sh = 12 * int(np.sign(dev)) if abs(dev) >= 8.5 else 0
+            if sh:
+                for vn in ln_notes:
+                    vn.pitch += sh
         rep['zeilen'] = f'{sum(1 for r in res_lines if r)} von {len(lines)} Zeilen zugeordnet'
         rep['angeglichen'] = changed
         rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))

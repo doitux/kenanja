@@ -470,13 +470,14 @@ def line_from_notes(cl: Cells, notes: list, syls: list, assign) -> Optional[list
             groups[-1].append(n)
     groups = groups[:len(syls)]
     cell_of = lambda t: int(np.argmin(np.abs(cl.times - t)))
+    raw_of = lambda t: float(np.interp(t, cl.times, np.arange(len(cl.times))))
     out = []
     for g in groups:
         main = max(g, key=lambda n: n.end - n.start)
         c0 = cell_of(g[0].start)
         c1 = max(c0 + 1, cell_of(g[-1].end))
         fp = main.fpitch or float(main.pitch)
-        out.append(LNote(c0, c1, fp, int(main.pitch)))
+        out.append(LNote(c0, c1, fp, int(main.pitch), raw_of(g[0].start)))
     for k in range(len(out) - 1):
         if out[k + 1].cell <= out[k].cell:
             out[k + 1].cell = out[k].cell + 1
@@ -497,10 +498,20 @@ class LNote:
     end: int
     fpitch: Optional[float]
     pitch: Optional[int] = None
+    raw: Optional[float] = None       # ungerundete Einsatzposition (in Zellen)
+
+
+def _simplicity(ln: list[LNote], anchor: int, scale: Optional[set]) -> float:
+    """Je kleiner, desto einfacher: wenige Sechzehntel-Einsätze, kleine Sprünge, nur Töne der Tonart."""
+    sc = sum(1.0 for n in ln if (n.cell - anchor) % 2)
+    sc += 0.25 * sum(abs(a.pitch - b.pitch) for a, b in zip(ln, ln[1:]) if a.pitch is not None and b.pitch is not None)
+    if scale:
+        sc += 2.0 * sum(1 for n in ln if n.pitch is not None and n.pitch % 12 not in scale)
+    return sc
 
 
 def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int]],
-                  texts: Optional[list[str]] = None) -> int:
+                  texts: Optional[list[str]] = None, scale: Optional[set] = None) -> int:
     """Zeilen mit gleicher Silbenzahl und ähnlichem Verlauf bilden eine Gruppe; je Silbe entscheidet die
     Mehrheit über Ton und Lage im Takt. Liefert die Zahl angeglichener Silben."""
     idx = [i for i, ln in enumerate(lines) if ln]
@@ -538,6 +549,9 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
         if len(g) < 2:
             continue
         s = len(lines[g[0]])
+        # Vorbild ohne klare Mehrheit: die einfachste Variante (bei Gleichstand der erste Durchgang)
+        model = min(g, key=lambda i: (_simplicity(lines[i], anchors[i], scale), i))
+        ref_line = [LNote(n.cell, n.end, n.fpitch, n.pitch) for n in lines[model]]
         for k in range(s):
             ps = [lines[i][k].pitch for i in g if lines[i][k].pitch is not None]
             rs = [lines[i][k].cell - anchors[i] for i in g]
@@ -550,11 +564,11 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
             cnt = Counter(p % 12 for p in ps).most_common()
             pc_best, pc_n = cnt[0]
             octs = Counter(p for p in ps if p % 12 == pc_best).most_common()
-            p_best = octs[0][0] if pc_n > half else None
+            p_best = octs[0][0] if pc_n > half else ref_line[k].pitch
             rc = Counter(rs).most_common(1)[0]
-            r_best = rc[0] if rc[1] > half else None
+            r_best = rc[0] if rc[1] > half else ref_line[k].cell - anchors[model]
             ec = Counter(es).most_common(1)[0]
-            e_best = ec[0] if ec[1] > half else None
+            e_best = ec[0] if ec[1] > half else ref_line[k].end - ref_line[k].cell
             for i in g:
                 n = lines[i][k]
                 if p_best is not None and n.pitch != p_best:
@@ -578,13 +592,63 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
     return changed
 
 
+def straighten_if_untypical(lines: list[Optional[list[LNote]]], anchors: list[Optional[int]], cl: Cells,
+                            typical: float = 0.15) -> int:
+    """Vorgezogene Silben (Sechzehntel vor der Achtel/Zählzeit) bleiben nur, wenn sie zum Lied passen,
+    d. h. im Song häufig vorkommen. Sonst werden sie auf die folgende Achtel geradegezogen."""
+    notes = [(i, n) for i, ln in enumerate(lines) if ln for n in ln]
+    if not notes:
+        return 0
+    off = [(i, n) for i, n in notes if (n.cell - cl.phase * SUB) % 2]
+    if len(off) >= typical * len(notes):
+        return 0
+    moved = 0
+    for i, n in off:
+        ln = lines[i]
+        k = ln.index(n)
+        nxt = ln[k + 1].cell if k + 1 < len(ln) else None
+        if nxt is None or n.cell + 1 < nxt:
+            n.cell += 1
+            n.end = max(n.end, n.cell + 1)
+            moved += 1
+    return moved
+
+
+def anticipations(lines: list[Optional[list[LNote]]], cl: Cells, typical: float = 0.15) -> bool:
+    """Passen Vorzieher zum Lied? Dann werden Silben, die knapp vor einer Achtel/Zählzeit kommen
+    (mindestens 0,3 Sechzehntel zu früh), als vorgezogene Sechzehntel notiert statt auf den Schlag gerundet."""
+    notes = [n for ln in lines if ln for n in ln if n.raw is not None]
+    if not notes:
+        return False
+    odd = sum(1 for n in notes if (n.cell - cl.phase * SUB) % 2)
+    if odd < typical * len(notes):
+        return False
+    for ln in lines:
+        if not ln:
+            continue
+        for k, n in enumerate(ln):
+            if n.raw is None:
+                continue
+            base = cl.phase * SUB
+            e = base + 2 * int(np.ceil((n.raw - base) / 2))       # nächste Achtel-Position ab hier
+            d = e - n.raw
+            if 0.3 <= d < 0.5:
+                c = e - 1
+                prev = ln[k - 1].cell if k > 0 else -1
+                if c > prev:
+                    n.end = max(n.end, c + 1)
+                    n.cell = c
+    return True
+
+
 # --------------------------------------------------------------------------- Gesamtablauf ----
 
 def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts: list[int],
                snap=None, tr: Optional[Track] = None, blocks: Optional[list[int]] = None,
                anchors: Optional[list[Optional[float]]] = None, vnotes: Optional[list] = None,
                line_syls: Optional[list] = None, assign=None, align=None, labels: Optional[list] = None,
-               texts: Optional[list[str]] = None, old_ranges: Optional[list] = None):
+               texts: Optional[list[str]] = None, old_ranges: Optional[list] = None,
+               scale: Optional[set] = None):
     """-> (Liste je Zeile: [(start_s, end_s, midi, fpitch)] oder None, Track, Cells, Zahl angeglichener Silben)"""
     tr = tr or pitch_track(y22)
     cl = Cells(tr, beats, phase, bpb)
@@ -692,7 +756,9 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
             if n.pitch is None:
                 nb = [m.pitch for m in ln if m.pitch is not None]
                 n.pitch = nb[0] if nb else 60
-    changed = unify_repeats(lines, anchors, texts)
+    if not anticipations(lines, cl):
+        straighten_if_untypical(lines, anchors, cl)
+    changed = unify_repeats(lines, anchors, texts, scale)
     out = []
     for ln in lines:
         if not ln:
