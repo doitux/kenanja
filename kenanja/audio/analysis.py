@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -100,6 +101,26 @@ def lead_stem(path, voc: np.ndarray, progress=None, cache=None) -> np.ndarray:
 
 
 # ------------------------------------------------------------------ Schläge ----
+
+def scale_beats(beats: np.ndarray, tempo: float, faktor: float, mix22: Optional[np.ndarray] = None,
+                sr: int = 22050) -> tuple[np.ndarray, float]:
+    """Notation in doppeltem (faktor 2) oder halbem (0.5) Tempo: Schläge verdoppeln bzw. jeden zweiten nehmen."""
+    beats = np.asarray(beats, dtype=float)
+    if faktor == 2 and len(beats) > 1:
+        mids = (beats[:-1] + beats[1:]) / 2
+        out = np.empty(len(beats) + len(mids))
+        out[0::2], out[1::2] = beats, mids
+        return out, tempo * 2
+    if faktor == 0.5 and len(beats) > 3:
+        off = 0
+        if mix22 is not None:
+            import librosa
+            oenv = librosa.onset.onset_strength(y=mix22, sr=sr, hop_length=512)
+            fr = np.clip(librosa.time_to_frames(beats, sr=sr, hop_length=512), 0, len(oenv) - 1)
+            off = 0 if oenv[fr[0::2]].mean() >= oenv[fr[1::2]].mean() else 1
+        return beats[off::2], tempo / 2
+    return beats, tempo
+
 
 def track_beats(y_mono: np.ndarray, sr: int = 22050, tempo_hint: Optional[float] = None) -> tuple[np.ndarray, float]:
     """Schlagzeiten (Sekunden) und Tempo. Gleichmäßiges Raster mit lokaler Feinanpassung."""
@@ -887,6 +908,87 @@ def _fix_octaves(notes: list[VNote]) -> None:
             notes[k].pitch += 12
 
 
+DEBUG: dict = {}
+
+
+def _smooth_octaves(notes: list, shift_cost: float = 1.5, gap: float = 3.0) -> None:
+    """Je Ton Oktave −12/0/+12 so wählen, dass Sprünge über eine Quinte teuer sind (Zeilen über längere
+    Pausen hinweg zählen nicht als Nachbarn). Ändert die Tonhöhen an Ort und Stelle."""
+    if len(notes) < 3:
+        return
+    S = (-12, 0, 12)
+
+    def jump(d):
+        d = abs(d)
+        return 0.0 if d <= 5 else (d - 5) * 0.5 if d <= 7 else 1.0 + (d - 7) * 3.0
+    cost = [abs(s_) / 12 * shift_cost for s_ in S]
+    back = []
+    for k in range(1, len(notes)):
+        cont = notes[k].start - notes[k - 1].end < gap
+        nc, bk = [], []
+        for j, s_ in enumerate(S):
+            best, arg = None, 0
+            for i, s0 in enumerate(S):
+                c = cost[i] + (jump(notes[k].pitch + s_ - notes[k - 1].pitch - s0) if cont else 0.0)
+                if best is None or c < best:
+                    best, arg = c, i
+            nc.append(best + abs(s_) / 12 * shift_cost)
+            bk.append(arg)
+        cost = nc
+        back.append(bk)
+    j = int(np.argmin(cost))
+    choice = [j]
+    for bk in reversed(back):
+        j = bk[j]
+        choice.append(j)
+    choice.reverse()
+    for n, j in zip(notes, choice):
+        n.pitch += S[j]
+
+
+def _consistent_lines(vnotes, note_syl, width: float = 6.0) -> None:
+    """Alle Zeilen in eine gemeinsame Lage bringen: Es wird die Mittellage gesucht, in die (oktavverschoben)
+    möglichst viele Zeilen passen – bei Gleichstand mit möglichst wenigen Verschiebungen. Zeilen, die nur
+    eine Oktave daneben liegen (Männerstimme, Gruppe), werden dorthin geholt."""
+    by_line: dict[int, list] = {}
+    for vn in vnotes:
+        by_line.setdefault(note_syl[id(vn)].line, []).append(vn)
+    if len(by_line) < 2:
+        return
+    meds = {li: float(np.median([n.pitch for n in ns])) for li, ns in by_line.items()}
+    best = None
+    for c in range(40, 90):
+        fit = moved = 0
+        sh = {}
+        for li, m in meds.items():
+            s_ = min((-12, 0, 12), key=lambda x: (abs(m + x - c), abs(x)))
+            if abs(m + s_ - c) <= width:
+                fit += len(by_line[li])
+                if s_:
+                    moved += len(by_line[li])
+                    sh[li] = s_
+        key = (fit, -moved, -abs(c - 64))
+        if best is None or key > best[0]:
+            best = (key, sh)
+    for li, s_ in best[1].items():
+        for n in by_line[li]:
+            n.pitch += s_
+
+
+def _octave_fix_lines(vnotes, note_syl) -> None:
+    """(ältere Variante) ganze Zeilen und einzelne Ausreißer um eine Oktave zurückholen."""
+    by_line: dict[int, list] = {}
+    for vn in vnotes:
+        by_line.setdefault(note_syl[id(vn)].line, []).append(vn)
+    song_med = float(np.median([vn.pitch for vn in vnotes])) if vnotes else 66.0
+    for ln_notes in by_line.values():
+        med = float(np.median([vn.pitch for vn in ln_notes]))
+        dev = song_med - med
+        sh = 12 * int(np.sign(dev)) if abs(dev) >= 8.5 else 0
+        for vn in ln_notes:
+            vn.pitch += sh
+
+
 def _norm_octave(notes: list[VNote], lo: int = 57, hi: int = 74) -> int:
     """Leadsheet-Lage: die Oktave, in der die Melodie (nach Dauer gewichtet) am besten in den üblichen
     Notationsbereich a … d'' (Gemeinde-Lage) passt. Robuster als „Median in einer festen Oktave“,
@@ -911,7 +1013,8 @@ def _label_counter(labels):
 
 
 def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors: str = '',
-               progress=None, use_asr: bool = True, cache=None, gemeinde: bool = True) -> AnalysisResult:
+               progress=None, use_asr: bool = True, cache=None, gemeinde: bool = True,
+               tempo_faktor: float = 1.0) -> AnalysisResult:
     import librosa
     rep = {}
 
@@ -928,6 +1031,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     inst22 = librosa.resample(inst.mean(0), orig_sr=SR, target_sr=22050)
     step('Takt und Tempo', 0.52)
     beats, tempo = track_beats(mix22)
+    beats, tempo = scale_beats(beats, tempo, tempo_faktor, mix22)
     step('Akkorde', 0.58)
     probs, fps = chord_probs(mix22)
     bass = bass_per_beat(inst22, beats)
@@ -946,6 +1050,8 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         lead = lead_stem(path, voc, (lambda f: progress('Leadstimme vom Chor trennen', 0.62 + 0.1 * f))
                          if progress else None, cache)
         lead22 = lead_or_group(voc22, librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050))
+        if os.environ.get('KENANJA_TEST_STEM') == 'gesang':
+            lead22 = voc22
     except Exception as e:   # Modell nicht ladbar o. ä.: mit der ganzen Gesangsspur weiter
         rep['leadstimme'] = f'nicht getrennt ({type(e).__name__})'
         lead22 = voc22
@@ -998,10 +1104,18 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                     found = A.merge(*per_stem)
                     if found:
                         st = A.syllable_times(syls, found)
+                        if A.ctc_ready():
+                            # alle übrigen Silben per Zwangsausrichtung des bekannten Texts zwischen den Ankern
+                            step('Text ausrichten', 0.8)
+                            allc = ''.join(sorted(set(''.join(A.clean_word(s_.text) for s_ in syls))))
+                            y16v = librosa.resample(voc.mean(0), orig_sr=SR, target_sr=16000)
+                            lp, chars = A.ctc_logprobs(y16v, allc, wd / 'ausrichtung.npz')
+                            st = A.fill_syllable_times(syls, st, lp, chars, len(y16v) / 16000)
                         syl_times = [[st[k] for k, s_ in enumerate(syls) if s_.line == li] for li in range(len(lines))]
-                        hit = sum(t is not None for t in st)
                         nw = sum(1 for s_ in syls if s_.syllabic in ('single', 'begin'))
-                        rep['spracherkennung'] = f'{hit} von {nw} Wörtern verankert'
+                        hit = sum(1 for s_, t in zip(syls, st) if t is not None and s_.syllabic in ('single', 'begin'))
+                        rep['spracherkennung'] = f'{hit} von {nw} Wörtern verankert' + (
+                            '' if A.ctc_ready() else ' (Feinausrichtung fehlt – Spracherkennung neu herunterladen)')
                         for li, ts in enumerate(syl_times):
                             if ts and ts[0] is not None:
                                 anchors[li] = (grid.beat_pos(ts[0]) - phase) / bpb
@@ -1012,15 +1126,33 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 syl_times = None
         # 2. Blöcke verorten (Wiederholungen über die Melodie), je Silbe eine Note, gleiche Zeilen angleichen
         old_ranges = [((vm[r[0]].start, vm[r[1] - 1].end) if r and r[1] > r[0] else None) for r in rg0]
-        res_lines, _, _, changed, gmode = G.transcribe(
-            lead22, beats, phase, bpb, counts, snap=_snap, blocks=[len(b_.lines) for b_ in blocks],
-            anchors=anchors, vnotes=vn0, line_syls=line_syls, align=align_lines,
-            assign=lambda sy, ns: G.assign_syllables_sung(
-                sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
-                                   VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
-            labels=labels, texts=lines, old_ranges=old_ranges, syl_times=syl_times,
-            scale={(tpc_pc(key_tpc) + d) % 12 for d in ((0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11))})
+        def _transcribe(stem22, vn_):
+            return G.transcribe(
+                stem22, beats, phase, bpb, counts, snap=_snap, blocks=[len(b_.lines) for b_ in blocks],
+                anchors=anchors, vnotes=vn_, line_syls=line_syls, align=align_lines,
+                assign=lambda sy, ns: G.assign_syllables_sung(
+                    sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
+                                       VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
+                labels=labels, texts=lines, old_ranges=old_ranges, syl_times=syl_times,
+                scale={(tpc_pc(key_tpc) + d) % 12 for d in ((0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11))})
+        res_lines, g_tr, _, changed, gmode = _transcribe(lead22, vn0)
+        dis_lead = G.STATS.get('ton_angeglichen', 0) / max(1, G.STATS.get('silben_in_gruppen', 0))
+        rep['stimme'] = 'Leadstimme'
+        if syl_times is not None and lead22 is not voc22 and os.environ.get('KENANJA_TEST_STEM') != 'lead':
+            # Gegenprobe mit der ganzen Gesangsspur: Manchmal trennt das Lead-Modell die Melodie falsch ab
+            # (Frauenstimme als „Chor“ o. ä.). Welche Spur passt, zeigt sich daran, wie einheitlich die
+            # wiederholten Zeilen klingen – die stimmigere Fassung gewinnt.
+            step('Melodie gegenprüfen', 0.84)
+            vn_g = vocal_notes(voc22)
+            snap_to_key(vn_g, key_tpc, minor)
+            alt = _transcribe(voc22, vn_g)
+            dis_voc = G.STATS.get('ton_angeglichen', 0) / max(1, G.STATS.get('silben_in_gruppen', 0))
+            DEBUG['uneinig'] = (dis_lead, dis_voc, changed, alt[3])
+            if dis_voc < dis_lead - 0.04:
+                res_lines, g_tr, _, changed, gmode = alt
+                rep['stimme'] = 'ganze Gesangsspur'
         rep['zuordnung'] = gmode
+        DEBUG['track'] = (np.asarray(g_tr.t), np.asarray(g_tr.midi))
         rep['_rohnoten'] = len(vm)
         vnotes = []
         for li, ln in enumerate(res_lines):
@@ -1032,37 +1164,33 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 vnotes.append(vn)
                 note_syl[id(vn)] = sy
             line_ranges.append((li, ln[0][0], ln[-1][1]))
-        # immer Frauenlage: Zeilen, die (z. B. von einem Mann) eine Oktave tiefer/höher gesungen wurden, einzeln holen
-        by_line: dict[int, list] = {}
-        for vn in vnotes:
-            by_line.setdefault(note_syl[id(vn)].line, []).append(vn)
-        song_med = float(np.median([vn.pitch for vn in vnotes])) if vnotes else 66.0
-        for ln_notes in by_line.values():
-            # nur ganze Zeilen, die klar eine Oktave neben dem Rest liegen (Männerstimme o. ä.)
-            med = float(np.median([vn.pitch for vn in ln_notes]))
-            dev = song_med - med
-            sh = 12 * int(np.sign(dev)) if abs(dev) >= 8.5 else 0
-            if sh:
-                for vn in ln_notes:
-                    vn.pitch += sh
-        # einzelne Oktavsprünge der Tonhöhenerkennung (Ton eine Oktave neben seinen Nachbarn) zurückholen
-        for ln_notes in by_line.values():
-            ps = [vn.pitch for vn in ln_notes]
-            line_med = float(np.median(ps)) if len(ps) >= 5 else None
-            for k, vn in enumerate(ln_notes):
-                nb = ps[max(0, k - 2):k] + ps[k + 1:k + 3]
-                if len(nb) < 2:
-                    continue
-                ref = float(np.median(nb))
-                if line_med is not None and abs(vn.pitch - line_med) > abs(vn.pitch - ref):
-                    ref = line_med
-                d = vn.pitch - ref
-                if abs(d) >= 8.5 and abs(d - 12 * np.sign(d)) <= 5:
-                    vn.pitch -= 12 * int(np.sign(d))
+        # Oktavlage glätten: die Tonhöhenerkennung springt bei Gruppen-/Männerstimmen gern eine Oktave.
+        # Eine Melodie bewegt sich aber fast nur in kleinen Schritten – je Ton wird die Oktave so gewählt,
+        # dass der Verlauf möglichst glatt bleibt (dynamische Programmierung über die gesungene Reihenfolge).
+        if os.environ.get('KENANJA_TEST_OKT') == 'alt':
+            _octave_fix_lines(vnotes, note_syl)
+        else:
+            _consistent_lines(vnotes, note_syl)
+            _smooth_octaves(sorted(vnotes, key=lambda n: n.start),
+                            gap=float(os.environ.get('KENANJA_TEST_OKTGAP', '8.0')),
+                            shift_cost=float(os.environ.get('KENANJA_TEST_OKTSC', '1.5')))
         # erst jetzt (ohne Ausreißer-Zeilen und -Töne) die Oktave der ganzen Melodie festlegen
         octv = _norm_octave(vnotes)
         for n in vnotes:
             n.pitch += octv
+        # Diagnose (nur für Tests): je Silbe Zeit, Ton und ob ihr Wort per Spracherkennung verankert war
+        idx_in_line = {id(s_): k for li in range(len(lines)) for k, s_ in enumerate([x for x in syls if x.line == li])}
+        DEBUG['silben'] = []
+        for vn in vnotes:
+            sy = note_syl[id(vn)]
+            k = idx_in_line[id(sy)]
+            ts_ = syl_times[sy.line] if syl_times else None
+            kk = k
+            while ts_ and kk > 0 and ts_[kk] is None and [x for x in syls if x.line == sy.line][kk].syllabic in ('middle', 'end'):
+                kk -= 1
+            DEBUG['silben'].append((sy.line, k, sy.text, vn.start, vn.pitch, bool(ts_ and ts_[kk] is not None),
+                                    ts_[k] if ts_ else None))
+        DEBUG['beats'] = (np.asarray(beats), phase, bpb)
         rep['zeilen'] = f'{sum(1 for r in res_lines if r)} von {len(lines)} Zeilen zugeordnet'
         rep['angeglichen'] = changed
         rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
@@ -1254,7 +1382,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     # Formteile
     step('Formteile', 0.94)
     sections = _make_sections(bars, blocks, line_ranges, grid, note_syl, beats)
-    rep['unsicher'] = mark_outliers(sections)
+    rep['unsicher'] = mark_outliers(sections) + mark_rare_extremes(sections)
     song = Song(title=title or Path(path).stem, authors=authors, key=key_name(key_tpc, minor),
                 tempo=round(tempo), sections=sections, audio=str(path))
     from ..lyrics import assign_pickups, auto_lines, apply_text
@@ -1314,6 +1442,28 @@ def mark_outliers(sections: list[Section], max_dur=F(1, 2), jump: int = 3) -> in
         if n.pitch >= max(nb) + jump or n.pitch <= min(nb) - jump:
             n.unsicher = True
             marked += 1
+    return marked
+
+
+def mark_rare_extremes(sections: list[Section], max_count: int = 2, max_beats=F(1), gap: int = 3) -> int:
+    """Höchster/tiefster Ton, der nur ein-, zweimal kurz vorkommt und deutlich (≥ gap Halbtöne) über bzw. unter
+    allen anderen liegt, ist meist ein Erkennungsfehler oder eine Verzierung: unsicher markieren (zählt dann nicht
+    für Spitzentöne und Tonart-Vorschlag, bleibt aber im Leadsheet und unter „Spitzentöne prüfen“ sichtbar)."""
+    notes = [n for sec in sections for b in sec.bars for n in b.melody if n.pitch is not None and not n.unsicher]
+    marked = 0
+    for side in (1, -1):
+        for _ in range(1):
+            ps = sorted({n.pitch for n in notes if not n.unsicher}, reverse=side > 0)
+            if len(ps) < 4:
+                break
+            ext, nxt = ps[0], ps[1]
+            ns = [n for n in notes if n.pitch == ext and not n.unsicher]
+            if abs(ext - nxt) >= gap and len(ns) <= max_count and sum((n.dur for n in ns), F(0)) <= max_beats:
+                for n in ns:
+                    n.unsicher = True
+                    marked += 1
+            else:
+                break
     return marked
 
 

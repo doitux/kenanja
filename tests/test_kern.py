@@ -104,3 +104,54 @@ def test_liedtext_chorblatt_format():
     assert b[0].lines == ['Der Morgen kommt ganz leise', 'und alles wird hell']
     assert b[1].lines == ['Wir singen laut lala', 'Wir singen froh lala']
     assert b[3].lines == b[1].lines
+
+
+def test_raster_bevorzugt_einfache_notenwerte():
+    from kenanja.audio.gemeinde import quantize_onsets
+    # leicht verschleppte Achtel werden Achtel, keine Sechzehntel
+    assert quantize_onsets([0.1, 2.4, 3.7, 6.2]) == [0, 2, 4, 6]
+    # echte Sechzehntel bleiben, wenn die Zeit eindeutig ist
+    assert quantize_onsets([0.0, 1.0, 2.0, 3.0], 0.3, 0.1) == [0, 1, 2, 3]
+
+
+def test_oktavlage_glatt_und_einheitlich():
+    from kenanja.audio.analysis import _smooth_octaves, _consistent_lines, VNote
+
+    class S:
+        def __init__(self, line):
+            self.line = line
+    ns = [VNote(i * 0.5, i * 0.5 + 0.4, p) for i, p in enumerate([64, 66, 67, 55, 57, 59, 69, 71])]
+    _smooth_octaves(ns)
+    assert [n.pitch for n in ns] == [64, 66, 67, 67, 69, 71, 69, 71]
+    # zwei Zeilen eine Oktave tiefer (Männerstimme) werden zu den anderen geholt
+    lines = [[64, 66, 67], [52, 54, 55], [69, 67, 66], [50, 52, 54], [64, 62, 64]]
+    vn, ns_ = [], {}
+    for li, ps in enumerate(lines):
+        for p in ps:
+            v = VNote(0, 0.1, p)
+            vn.append(v)
+            ns_[id(v)] = S(li)
+    _consistent_lines(vn, ns_)
+    assert min(v.pitch for v in vn) >= 62
+
+
+def test_tempo_faktor():
+    import numpy as np
+    from kenanja.audio.analysis import scale_beats
+    b = np.arange(0, 10, 1.0)
+    d, t = scale_beats(b, 60, 2)
+    assert t == 120 and len(d) == 19 and d[1] == 0.5
+    h, t2 = scale_beats(b, 60, 0.5)
+    assert t2 == 30 and len(h) == 5
+
+
+def test_seltene_spitzentoene_unsicher():
+    from fractions import Fraction as F
+    from kenanja.model import Note, Bar, Section
+    from kenanja.audio.analysis import mark_rare_extremes
+    bar = Bar(4, 4)
+    ps = [60, 62, 64, 65, 67, 64, 62, 60, 62, 64, 72]
+    bar.melody = [Note(pitch=p, onset=F(k, 4), dur=F(1, 4)) for k, p in enumerate(ps)]
+    sec = Section(id='a', label='A', bars=[bar])
+    assert mark_rare_extremes([sec]) == 1
+    assert [n.pitch for n in bar.melody if n.unsicher] == [72]

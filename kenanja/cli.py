@@ -48,7 +48,7 @@ def main(argv=None):
     e.add_argument('--nebenstimmen', action='store_true')
     e.add_argument('--satb', action='store_true')
     sub.add_parser('pruefen', help='Installation prüfen')
-    sp = sub.add_parser('sprachmodell', help='Spracherkennung einrichten (einmaliger Download, ca. 650 MB)')
+    sp = sub.add_parser('sprachmodell', help='Spracherkennung einrichten (einmaliger Download, ca. 1 GB)')
     sp.add_argument('--test', action='store_true', help='danach kurz ausprobieren')
     de = sub.add_parser('deinstallieren', help='Kenanja restlos entfernen (Projekte bleiben, außer --alles)')
     de.add_argument('--alles', action='store_true', help='auch alle Kenanja-Projekte löschen')
@@ -112,7 +112,10 @@ def main(argv=None):
         if args.test:
             import numpy as np
             t = np.arange(16000 * 2) / 16000
-            A.words(0.1 * np.sin(2 * np.pi * 220 * t).astype(np.float32))
+            y = (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+            A.words(y)
+            lp, ch = A.ctc_logprobs(y, 'abc')
+            A.align_words(lp, ch, ['ab', 'c'], 0.0, 2.0)
             print('Spracherkennung: Test ok')
     elif args.cmd == 'pruefen':
         check()
@@ -142,7 +145,7 @@ def check():
         print('Modelle     : Download fehlgeschlagen –', e)
     from .audio import asr as A
     if A.available():
-        print('Spracherkennung:', 'verfügbar, Modell geladen' if A.model_ready()
+        print('Spracherkennung:', 'verfügbar, Modell geladen' if A.all_ready()
               else 'verfügbar, Modell noch nicht geladen (kenanja sprachmodell)')
     else:
         print('Spracherkennung: nicht enthalten (optional) – der Text wird über die Silben der Melodie zugeordnet')

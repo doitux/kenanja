@@ -9,6 +9,7 @@ Grundsätze (wie bei handgesetzten Leadsheets für die Gemeinde):
 """
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -483,19 +484,69 @@ def line_from_anchored(cl: Cells, vnotes: list, syls: list, times: list, assign,
     ks = [k for k, t in enumerate(times) if t is not None]
     if not ks or not vnotes:
         return None
+    if len(ks) >= max(1, 0.5 * len(syls)) and len(ks) < len(syls):
+        # fehlende Silbenzeiten zwischen bekannten Zeiten gleichmäßig verteilen (am Rand: 0,3 s Abstand)
+        times = list(times)
+        for k in range(len(times)):
+            if times[k] is not None:
+                continue
+            a = max((j for j in range(k) if times[j] is not None), default=None)
+            b = min((j for j in range(k + 1, len(times)) if times[j] is not None), default=None)
+            if a is not None and b is not None:
+                times[k] = times[a] + (times[b] - times[a]) * (k - a) / (b - a)
+            elif a is not None:
+                times[k] = times[a] + 0.3 * (k - a)
+            else:
+                times[k] = times[b] - 0.3 * (b - k)
+        ks = list(range(len(syls)))
+    if len(ks) == len(syls) and os.environ.get('KENANJA_TEST_SPAN') != 'aus':
+        # jede Silbe hat ihre Zeit: je Silbe die Note, die den Kern der Silbe am längsten ausfüllt
+        d0, d1 = (float(x) for x in os.environ.get('KENANJA_TEST_SPAN', '0.0,0.0').split(','))
+        proto = vnotes[0]
+        pairs = []
+        for k, sy in enumerate(syls):
+            a = times[k] + d0
+            b = (times[k + 1] if k + 1 < len(syls) else t_end) + d1
+            if b <= a + 0.05:
+                b = a + 0.12
+            best, ov = None, 0.0
+            for v in vnotes:
+                if v.end <= a or v.start >= b:
+                    continue
+                o = min(v.end, b) - max(v.start, a)
+                if o > ov:
+                    best, ov = v, o
+            if best is None or ov < 0.04:
+                best = _track_note(cl, proto, a, b)
+            if best is None:
+                if pairs:
+                    last_n = pairs[-1][0]
+                    best = type(proto)(a, b, last_n.pitch, 0.5, last_n.fpitch)
+                else:      # erste Silbe ohne Ton: Ton der nächsten erkannten Note
+                    nxt = min((v for v in vnotes if v.start >= a), key=lambda v: v.start, default=None)
+                    if nxt is None:
+                        return None
+                    best = type(proto)(a, b, nxt.pitch, 0.5, nxt.fpitch)
+            pairs.append((type(proto)(times[k], max(times[k] + 0.05, min(b, best.end)), best.pitch, best.strength,
+                                      best.fpitch), sy))
+    else:
+        pairs = None
     EARLY = 0.15
     segs = []      # (silben, ta, tb)
-    if ks[0] > 0:
+    if pairs is not None:
+        segs = []
+    elif ks[0] > 0:
         k0 = ks[0]
         ta = times[k0] - max(1.2, 0.55 * k0)
         if window:
             ta = min(ta, window[0].start - 0.05) if window[0].start < times[k0] - 0.2 else ta
         segs.append((syls[:k0], ta, times[k0] - EARLY))
-    for q, k in enumerate(ks):
+    for q, k in enumerate(ks if pairs is None else []):
         nk = ks[q + 1] if q + 1 < len(ks) else len(syls)
         tb = times[nk] - EARLY if nk < len(syls) else t_end
         segs.append((syls[k:nk], times[k] - EARLY, tb))
-    pairs = []
+    if pairs is None:
+        pairs = []
     proto = vnotes[0]
     for sy, ta, tb in segs:
         if not sy:
@@ -515,7 +566,57 @@ def line_from_anchored(cl: Cells, vnotes: list, syls: list, times: list, assign,
         pairs += assign(sy, ns)
     if not pairs:
         return None
-    return line_from_pairs(cl, pairs, len(syls))
+    out = line_from_pairs(cl, pairs, len(syls))
+    if out and len(out) == len(syls):
+        # Einsätze aus den Silbenzeiten der Textausrichtung, mit Vorliebe für einfache Notenwerte gerastert
+        raw_of = lambda t: float(np.interp(t, cl.times, np.arange(len(cl.times))))
+        xs = [raw_of(t + 0.05) if t is not None else n.raw if n.raw is not None else float(n.cell)
+              for t, n in zip(times, out)]
+        q = quantize_onsets(xs, *STATS.get('raster', (0.7, 0.3)))
+        for n, c, x in zip(out, q, xs):
+            n.cell, n.raw = c, x
+        for k in range(len(out) - 1):
+            out[k].end = min(max(out[k].end, out[k].cell + 1), out[k + 1].cell)
+            if out[k + 1].cell - out[k].end <= 1:
+                out[k].end = out[k + 1].cell
+        out[-1].end = max(out[-1].end, out[-1].cell + 1)
+    return out
+
+
+def quantize_onsets(xs: list[float], p16: float = 0.7, p_short: float = 0.3, win: int = 2) -> list[int]:
+    """Silbeneinsätze (Positionen in Sechzehnteln) auf das Raster legen: möglichst nah an der gesungenen Zeit,
+    aber Sechzehntel-Einsätze und Sechzehntel-Abstände kosten etwas – so entstehen Gemeinde-Notenwerte
+    (Achtel/Viertel) statt jeder Gesangsnuance. Dynamische Programmierung über die ganze Zeile."""
+    n = len(xs)
+    if n == 0:
+        return []
+    cand = [sorted({int(np.floor(x)) + d for d in range(-win + 1, win + 1)}) for x in xs]
+    cost = [{c: (c - xs[0]) ** 2 + (p16 if c % 2 else 0.0) for c in cand[0]}]
+    back: list[dict] = [{}]
+    for k in range(1, n):
+        cur, bk = {}, {}
+        for c in cand[k]:
+            base = (c - xs[k]) ** 2 + (p16 if c % 2 else 0.0)
+            best, arg = None, None
+            for pc, v in cost[-1].items():
+                if c <= pc:
+                    continue
+                tot = v + (p_short if c - pc == 1 else 0.0)
+                if best is None or tot < best:
+                    best, arg = tot, pc
+            if arg is not None:
+                cur[c], bk[c] = best + base, arg
+        if not cur:
+            pc = max(cost[-1])
+            cur[pc + 1], bk[pc + 1] = min(cost[-1].values()), pc
+        cost.append(cur)
+        back.append(bk)
+    c = min(cost[-1], key=cost[-1].get)
+    out = [c]
+    for k in range(n - 1, 0, -1):
+        c = back[k][c]
+        out.append(c)
+    return out[::-1]
 
 
 def line_from_pairs(cl: Cells, pairs: list, nsyl: int) -> Optional[list['LNote']]:
@@ -567,8 +668,12 @@ def _simplicity(ln: list[LNote], anchor: int, scale: Optional[set]) -> float:
     return sc
 
 
+STATS: dict = {}
+
+
 def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int]],
-                  texts: Optional[list[str]] = None, scale: Optional[set] = None) -> int:
+                  texts: Optional[list[str]] = None, scale: Optional[set] = None,
+                  struct: Optional[list] = None, bar_cells: Optional[int] = None) -> int:
     """Zeilen mit gleicher Silbenzahl und ähnlichem Verlauf bilden eine Gruppe; je Silbe entscheidet die
     Mehrheit über Ton und Lage im Takt. Liefert die Zahl angeglichener Silben."""
     idx = [i for i, ln in enumerate(lines) if ln]
@@ -593,6 +698,10 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
             if texts and norm(texts[i]) == norm(texts[j]):     # gleicher Text = gleiche Melodie
                 parent[find(i)] = find(j)
                 continue
+            if (struct and struct[i] is not None and struct[i] == struct[j]
+                    and os.environ.get('KENANJA_TEST_STRUCT') == '1'):
+                parent[find(i)] = find(j)           # gleiche Zeile in Strophe 1 und 2 (gleiche Silbenzahl)
+                continue
             same_p = np.mean([a.pitch is not None and b.pitch is not None and a.pitch % 12 == b.pitch % 12
                               for a, b in zip(A, B)])
             same_r = np.mean([abs(p - q) <= 1 for p, q in zip(rel(i), rel(j))])
@@ -602,16 +711,33 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
     for i in idx:
         groups.setdefault(find(i), []).append(i)
     changed = 0
+    STATS['ton_angeglichen'] = 0
+    STATS['silben_in_gruppen'] = sum(len(lines[i]) for g in groups.values() if len(g) >= 2 for i in g)
     for g in groups.values():
         if len(g) < 2:
             continue
         s = len(lines[g[0]])
         # Vorbild ohne klare Mehrheit: die einfachste Variante (bei Gleichstand der erste Durchgang)
-        model = min(g, key=lambda i: (_simplicity(lines[i], anchors[i], scale), i))
+        # Vorbild: der Durchgang, der tonlich am besten zu den anderen passt (Medoid); erst danach der einfachste
+        def _disagree(i):
+            return sum(1 for j in g if j != i for a, b in zip(lines[i], lines[j])
+                       if a.pitch is not None and b.pitch is not None and a.pitch % 12 != b.pitch % 12)
+        model = min(g, key=lambda i: (_disagree(i), _simplicity(lines[i], anchors[i], scale), i))
         ref_line = [LNote(n.cell, n.end, n.fpitch, n.pitch) for n in lines[model]]
+        # Taktanker je Durchgang so wählen, dass die Lage im Takt am besten zum Vorbild passt
+        # (ein Durchgang beginnt z. B. mit Auftakt im Takt davor, ein anderer knapp danach)
+        anc = {}
+        for i in g:
+            best_a, best_d = anchors[i], None
+            for sh in ((-bar_cells, 0, bar_cells) if bar_cells else (0,)):
+                a_ = anchors[i] + sh
+                d_ = sum(abs((n.cell - a_) - (m.cell - anchors[model])) for n, m in zip(lines[i], lines[model]))
+                if best_d is None or d_ < best_d:
+                    best_a, best_d = a_, d_
+            anc[i] = best_a
         for k in range(s):
             ps = [lines[i][k].pitch for i in g if lines[i][k].pitch is not None]
-            rs = [lines[i][k].cell - anchors[i] for i in g]
+            rs = [lines[i][k].cell - anc[i] for i in g]
             es = [lines[i][k].end - lines[i][k].cell for i in g]
             if not ps:
                 continue
@@ -623,16 +749,18 @@ def unify_repeats(lines: list[Optional[list[LNote]]], anchors: list[Optional[int
             octs = Counter(p for p in ps if p % 12 == pc_best).most_common()
             p_best = octs[0][0] if pc_n > half else ref_line[k].pitch
             rc = Counter(rs).most_common(1)[0]
-            r_best = rc[0] if rc[1] > half else ref_line[k].cell - anchors[model]
+            r_best = rc[0] if rc[1] > half else ref_line[k].cell - anc[model]
             ec = Counter(es).most_common(1)[0]
             e_best = ec[0] if ec[1] > half else ref_line[k].end - ref_line[k].cell
             for i in g:
                 n = lines[i][k]
                 if p_best is not None and n.pitch != p_best:
+                    if n.pitch is None or n.pitch % 12 != p_best % 12:
+                        STATS['ton_angeglichen'] = STATS.get('ton_angeglichen', 0) + 1
                     n.pitch = p_best
                     changed += 1
-                if r_best is not None and n.cell - anchors[i] != r_best:
-                    n.cell = anchors[i] + r_best
+                if r_best is not None and n.cell - anc[i] != r_best and abs(n.cell - (anc[i] + r_best)) <= 3:
+                    n.cell = anc[i] + r_best       # nur kleine Verschiebungen; sonst bleibt der Durchgang, wie er ist
                     changed += 1
                 if e_best is not None:
                     n.end = n.cell + max(1, e_best)
@@ -764,6 +892,16 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
             pos += n
     lines: list[Optional[list[LNote]]] = []
     anchors: list[Optional[int]] = []
+    STATS['pfad'] = {}
+    # Raster-Vorliebe: Bei dichtem Text (Silben meist im Sechzehntelabstand) bleiben Sechzehntel erlaubt,
+    # sonst werden Achtel/Viertel bevorzugt
+    STATS['raster'] = (0.7, 0.3)
+    if syl_times is not None:
+        per = float(np.median(np.diff(beats))) if len(beats) > 1 else 0.5
+        d = [b - a for ts_ in syl_times if ts_ for a, b in zip(ts_, ts_[1:]) if a is not None and b is not None and b > a]
+        if d and float(np.median(d)) / per <= 0.32:
+            STATS['raster'] = (0.3, 0.1)
+        STATS['silbenabstand'] = float(np.median(d)) / per if d else None
     # Zeilenanfänge aus der Spracherkennung (für das Ende der jeweils vorigen Zeile)
     line_t0 = [None] * len(counts)
     if syl_times is not None:
@@ -785,6 +923,7 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
                 t_end = min(t_end, nxt - 0.15)
             win = line_notes.get(li)
             ln = line_from_anchored(cl, vnotes, line_syls[li], ts, assign, t_end, win)
+            STATS.setdefault('pfad', {})[li] = 'anker' if ln else 'anker-fehlgeschlagen'
             if ln:
                 lines.append(ln)
                 anchors.append(cl.bar_cell(bar_of(cl.t(ln[0].cell))))
@@ -837,9 +976,22 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
             if n.pitch is None:
                 nb = [m.pitch for m in ln if m.pitch is not None]
                 n.pitch = nb[0] if nb else 60
+    dump = os.environ.get('KENANJA_DUMP')
+    if dump:
+        STATS['dump'] = {'start': [[n.cell for n in ln] if ln else None for ln in lines], 'anchors': list(anchors),
+                         'times': cl.times}
     if not anticipations(lines, cl):
         straighten_if_untypical(lines, anchors, cl)
-    changed = unify_repeats(lines, anchors, texts, scale)
+    if dump:
+        STATS['dump']['gerade'] = [[n.cell for n in ln] if ln else None for ln in lines]
+    struct = None
+    if labels and blocks and len(labels) == len(blocks):
+        struct = [(lb, k) if lb else None for lb, cnt in zip(labels, blocks) for k in range(cnt)]
+        if len(struct) != len(lines):
+            struct = None
+    changed = unify_repeats(lines, anchors, texts, scale, struct, cl.bpb * SUB)
+    if dump:
+        STATS['dump']['einheit'] = [[n.cell for n in ln] if ln else None for ln in lines]
     out = []
     for ln in lines:
         if not ln:

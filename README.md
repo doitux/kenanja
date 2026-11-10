@@ -98,16 +98,23 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
 
 * Tempo, Taktart und Tonart: zuverlässig.
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
-* Melodie: Kenanja trennt zuerst die Leadstimme vom Chor/Backgroundgesang und notiert wie ein
-  Gemeinde-Leadsheet: eine Note je Silbe, gleiche Zeilen gleich, im Zweifel die einfachere Variante,
-  immer in Frauenlage. Das Leadsheet trotzdem in MuseScore durchsehen.
+* Melodie: Kenanja trennt die Leadstimme vom Chor/Backgroundgesang und prüft zusätzlich die ganze
+  Gesangsspur – genommen wird die Fassung, bei der wiederholte Zeilen am einheitlichsten klingen.
+  Notiert wird wie ein Gemeinde-Leadsheet: eine Note je Silbe, gleiche Zeilen gleich (Mehrheit der
+  Durchgänge), einfache Notenwerte bevorzugt, durchgehend in einer Lage (Frauenlage).
+  Das Leadsheet trotzdem in MuseScore durchsehen.
+* Notenwerte: Viele Lieder lassen sich in zwei Tempi notieren (z. B. 65 oder 130 bpm). Beim Neu-Analysieren
+  lässt sich „doppeltes“ oder „halbes Tempo“ wählen.
 * Tonart-Wahl: Die höchsten und tiefsten Töne entscheiden über die Zieltonart. Unter „Stimmen & Tonart“
   listet Kenanja genau diese Stellen; jede lässt sich anhören (getrennte Leadstimme und erkannter Ton)
-  und mit einem Klick korrigieren oder als Verzierung von der Wertung ausnehmen.
-* Text: Mit der Spracherkennung (Einstellungen → „Spracherkennung herunterladen“, einmalig ca. 650 MB,
-  danach offline; oder `kenanja sprachmodell`) legt Kenanja jedes erkannte Wort dort an, wo es gesungen
-  wird – das verbessert Text und Melodie deutlich. Ohne sie wird der Text über die Gesangsphrasen zugeordnet.
-  Passt der eingefügte Text nicht zur Aufnahme (z. B. andere Version), warnt Kenanja.
+  und mit einem Klick korrigieren oder als Verzierung von der Wertung ausnehmen. Einzelne, nur kurz
+  vorkommende Ausreißer nach oben/unten zählen von vornherein nicht.
+* Text: Mit der Spracherkennung (Einstellungen → „Spracherkennung herunterladen“, einmalig ca. 1 GB,
+  danach offline; oder `kenanja sprachmodell`) erkennt Kenanja die gesungenen Wörter und richtet den
+  eingefügten Liedtext Buchstabe für Buchstabe an der Aufnahme aus – jede Silbe bekommt ihren eigenen
+  Zeitpunkt. Das verbessert Text, Melodie und Rhythmus deutlich. Ohne sie wird der Text über die
+  Gesangsphrasen zugeordnet. Der Liedtext darf im üblichen Chorblatt-Format eingefügt werden
+  (Überschriften, Regie-Pfeile „→ …“, Einwürfe in einer zweiten Spalte).
 
 ## Verwendete freie Software und Modelle
 
@@ -116,7 +123,8 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
 * Gesangstrennung: **UVR-MDX-NET Voc_FT**, Leadstimme vom Chor: **UVR_MDXNET_KARA_2** – beide aus dem Ultimate-Vocal-Remover-Projekt (ONNX), https://github.com/TRvlvr/model_repo
 * Tonhöhe: pYIN (librosa) · Silbentrennung: Pyphen · Noten: music21, MuseScore · Text: LibreOffice
 * Transponieren: **Rubber Band** (R3-Engine, Formanterhalt)
-* Spracherkennung (optional): **sherpa-onnx** mit **NVIDIA Parakeet TDT 0.6B v3** (CC-BY-4.0), https://github.com/k2-fsa/sherpa-onnx
+* Spracherkennung (optional): **sherpa-onnx** (Apache-2.0) mit **NVIDIA Parakeet TDT 0.6B v3** (CC-BY-4.0) für die Wörter
+  und **Meta Omnilingual ASR CTC 300M** (Apache-2.0) für die Textausrichtung, https://github.com/k2-fsa/sherpa-onnx
 
 Lizenz: GPL-3.0-or-later. Songtexte und Aufnahmen gehören ihren Rechteinhabern – Kenanja ist für die
 Probenvorbereitung im Rahmen der Lizenzen eurer Gemeinde (z. B. CCLI) gedacht.

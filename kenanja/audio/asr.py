@@ -1,7 +1,7 @@
 """Spracherkennung mit Wortzeiten (optional): verankert den eingefügten Liedtext in der Aufnahme.
 
 Nutzt sherpa-onnx mit einem mehrsprachigen Parakeet-Modell (u. a. Deutsch und Englisch). Das Modell wird bei
-Bedarf einmalig heruntergeladen (rund 650 MB). Fehlt sherpa-onnx oder das Modell, liefert ``words`` eine leere
+Bedarf einmalig heruntergeladen (zusammen rund 1 GB). Fehlt sherpa-onnx oder das Modell, liefert ``words`` eine leere
 Liste und die Analyse läuft ohne Spracherkennung weiter.
 """
 from __future__ import annotations
@@ -41,17 +41,23 @@ def model_ready() -> bool:
     return all((d / f).exists() for f in FILES)
 
 
+def all_ready() -> bool:
+    return model_ready() and ctc_ready()
+
+
 def ensure_model(progress=None) -> Path:
-    """Modell herunterladen und entpacken (nur die benötigten Dateien)."""
+    """Beide Modelle (Worterkennung ~650 MB, Textausrichtung ~350 MB) herunterladen und entpacken."""
     d = model_dir()
     if model_ready():
+        if not ctc_ready():
+            _download(CTC_URL, ctc_dir(), CTC_FILES, (lambda f: progress(0.65 + 0.35 * f)) if progress else None)
         return d
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / 'download.part'
 
     def hook(blocks, bs, total):
         if progress and total > 0:
-            progress(min(1.0, blocks * bs / total))
+            progress(0.65 * min(1.0, blocks * bs / total))
     urllib.request.urlretrieve(URL, tmp, hook)
     with tarfile.open(tmp, 'r:bz2') as tf:
         for m in tf.getmembers():
@@ -68,6 +74,8 @@ def ensure_model(progress=None) -> Path:
     tmp.unlink(missing_ok=True)
     if not model_ready():
         raise RuntimeError('Sprachmodell unvollständig')
+    if not ctc_ready():
+        _download(CTC_URL, ctc_dir(), CTC_FILES, (lambda f: progress(0.65 + 0.35 * f)) if progress else None)
     return d
 
 
@@ -278,4 +286,235 @@ def syllable_times(syls: list, asr: list[tuple[float, float, str]]) -> list[Opti
                 bad = [1]
         for i in bad:
             out[ks[an[i][0]]] = None
+    return out
+
+
+# ---------------------------------------------------------------- Zwangsausrichtung (CTC) ----
+# Zwischen sicher erkannten Wörtern werden die übrigen Wörter des bekannten Liedtexts per CTC-Ausrichtung
+# (mehrsprachiges Buchstabenmodell) zeitlich festgelegt.
+CTC_URL = ('https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/'
+           'sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12.tar.bz2')
+CTC_FILES = ('model.int8.onnx', 'tokens.txt')
+CTC_FR = 0.02
+
+
+def ctc_dir() -> Path:
+    from .btc import cache_dir
+    return cache_dir() / 'sprache' / 'omni-ctc'
+
+
+def ctc_ready() -> bool:
+    return all((ctc_dir() / f).exists() for f in CTC_FILES)
+
+
+def _download(url: str, d: Path, files: tuple, progress=None):
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / 'download.part'
+
+    def hook(blocks, bs, total):
+        if progress and total > 0:
+            progress(min(1.0, blocks * bs / total))
+    urllib.request.urlretrieve(url, tmp, hook)
+    with tarfile.open(tmp, 'r:bz2') as tf:
+        for m in tf.getmembers():
+            name = Path(m.name).name
+            if m.isfile() and name in files:
+                src = tf.extractfile(m)
+                with open(d / (name + '.part'), 'wb') as f:
+                    while True:
+                        chunk = src.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                (d / (name + '.part')).rename(d / name)
+    tmp.unlink(missing_ok=True)
+
+
+_CTC = None
+
+
+def _ctc():
+    global _CTC
+    if _CTC is None:
+        import os
+        import onnxruntime as ort
+        so_ = ort.SessionOptions()
+        so_.intra_op_num_threads = max(1, min(8, os.cpu_count() or 2))
+        sess = ort.InferenceSession(str(ctc_dir() / CTC_FILES[0]), so_, providers=['CPUExecutionProvider'])
+        tok = {}
+        for i, l in enumerate(open(ctc_dir() / CTC_FILES[1], encoding='utf-8')):
+            t = l.rstrip('\n').rsplit(' ', 1)[0]
+            tok.setdefault(t if t else ' ', i)
+        _CTC = (sess, tok)
+    return _CTC
+
+
+def ctc_logprobs(y16: np.ndarray, chars: str, cache: Optional[Path] = None) -> tuple[np.ndarray, str]:
+    """Log-Wahrscheinlichkeiten je 20-ms-Frame für [blank] + chars (nur die im Text vorkommenden Buchstaben)."""
+    sess, tok = _ctc()
+    chars = ''.join(c for c in dict.fromkeys(chars) if c in tok)
+    if cache is not None and cache.exists():
+        try:
+            z = np.load(cache, allow_pickle=False)
+            if str(z['chars']) == chars:
+                return z['lp'], chars
+        except Exception:
+            pass
+    cols = [0] + [tok[c] for c in chars]
+    y = y16.astype(np.float32)
+    y = y / (float(np.abs(y).max()) or 1.0) * 0.5
+    W, O = 30 * SR, 2 * SR
+    n = int(np.ceil(len(y) / 320))
+    out = np.full((n, len(cols)), -30.0, np.float32)
+    a = 0
+    while a < len(y):
+        seg = y[max(0, a - O):a + W + O]
+        lg = sess.run(None, {'x': seg[None]})[0][0]
+        lg = lg - lg.max(1, keepdims=True)
+        lp = (lg - np.log(np.exp(lg).sum(1, keepdims=True)))[:, cols]
+        off = (a - max(0, a - O)) // 320
+        f0 = a // 320
+        k = min(W // 320, n - f0, len(lp) - off)
+        if k > 0:
+            out[f0:f0 + k] = lp[off:off + k]
+        a += W
+    if cache is not None:
+        try:
+            with open(cache, 'wb') as f:
+                np.savez(f, lp=out, chars=np.array(chars))
+        except Exception:
+            pass
+    return out, chars
+
+
+def _viterbi(X: np.ndarray, seq: list[int]):
+    """CTC-Viterbi: X (T, V) mit Spalte 0 = blank; seq = Spaltenindizes. Liefert Zustandsfolge (T,) oder None."""
+    S = len(seq)
+    T = len(X)
+    if S == 0 or T < S:
+        return None
+    L = 2 * S + 1
+    lab = np.zeros(L, int)
+    lab[1::2] = seq
+    skip = np.zeros(L, bool)
+    if S > 1:
+        skip[3::2] = np.array(seq[1:]) != np.array(seq[:-1])
+    NEG = -1e9
+    dp = np.full(L, NEG)
+    dp[0] = X[0, 0]
+    dp[1] = X[0, lab[1]]
+    bp = np.zeros((T, L), np.int8)
+    for t in range(1, T):
+        a1 = np.concatenate([[NEG], dp[:-1]])
+        a2 = np.where(skip, np.concatenate([[NEG, NEG], dp[:-2]]), NEG)
+        st = np.stack([dp, a1, a2])
+        b = st.argmax(0)
+        dp = st.max(0) + X[t, lab]
+        bp[t] = b
+    s = L - 1 if dp[L - 1] >= dp[L - 2] else L - 2
+    if dp[s] < NEG / 2:
+        return None
+    path = np.zeros(T, int)
+    for t in range(T - 1, -1, -1):
+        path[t] = s
+        s -= int(bp[t, s])
+    return path
+
+
+def align_words(lp: np.ndarray, chars: str, words: list[str], t0: float, t1: float, char_times=None):
+    """Wörter (in Reihenfolge) im Zeitfenster [t0, t1) ausrichten. Liefert je Wort (start, güte) oder None."""
+    f0, f1 = max(0, int(t0 / CTC_FR)), min(len(lp), int(t1 / CTC_FR))
+    X = lp[f0:f1]
+    if len(X) < 2:
+        return [None] * len(words)
+    ref = X.max(1)
+    seq, wid = [], []
+    for k, w in enumerate(words):
+        for c in w:
+            if c in chars:
+                seq.append(chars.index(c) + 1)
+                wid.append(k)
+    path = _viterbi(X, seq)
+    if path is None:
+        return [None] * len(words)
+    if char_times is not None:          # Zeit jedes Buchstabens (erstes Frame seines Zustands)
+        ct = [None] * len(seq)
+        for t, st in enumerate(path):
+            if st % 2 == 1 and ct[st // 2] is None:
+                ct[st // 2] = (f0 + t) * CTC_FR
+        char_times.extend(ct)
+    first = [None] * len(words)
+    score = [[] for _ in words]
+    for t, st in enumerate(path):
+        if st % 2 == 1:
+            k = wid[st // 2]
+            if first[k] is None:
+                first[k] = (f0 + t) * CTC_FR
+            score[k].append(float(X[t, seq[st // 2]] - ref[t]))
+    return [(first[k], float(np.mean(score[k]))) if first[k] is not None else None for k in range(len(words))]
+
+
+def clean_word(w: str) -> str:
+    return re.sub(r"[^\w']", '', w.lower().replace('’', "'")).replace('_', '')
+
+
+def fill_syllable_times(syls: list, st: list, lp: np.ndarray, chars: str, t_end: float) -> list:
+    """Silbenzeiten für alle Silben: erkannte Wörter (st, nur Wortanfänge) bleiben fest, alle Silben dazwischen
+    werden per CTC-Ausrichtung des bekannten Texts gesetzt."""
+    first, wsyl = [], []                    # je Wort: erste Silbe, Silbenindizes
+    for k, s_ in enumerate(syls):
+        if s_.syllabic in ('single', 'begin') or not wsyl:
+            first.append(k)
+            wsyl.append([k])
+        else:
+            wsyl[-1].append(k)
+    nw = len(first)
+    anc = [st[k] for k in first]
+    out = list(st)
+    idx = [i for i, a in enumerate(anc) if a is not None]
+    if not idx:
+        return out
+    segs = []
+    i0 = idx[0]
+    if i0 > 0:
+        segs.append((0, i0 + 1, max(0.0, anc[i0] - (1.2 * i0 + 4)), anc[i0] + 1.5, i0))
+    for q in range(len(idx) - 1):
+        i, j = idx[q], idx[q + 1]
+        if j - i < 1:
+            continue
+        ta, tb = anc[i], anc[j]
+        if tb - ta > max(30.0, 2.5 * (j - i) + 8):
+            continue                         # große Lücke: vermutlich nicht gesungener Text
+        segs.append((i, j, ta - 0.3, tb - 0.02, None))
+    il = idx[-1]
+    if il < nw - 1:
+        segs.append((il, nw, anc[il] - 0.3, min(t_end, anc[il] + 1.2 * (nw - il) + 4), None))
+    for (i, j, ta, tb, last_fixed) in segs:
+        words = []
+        spans = []                           # je Silbe: Buchstabenbereich in der Folge
+        pos = 0
+        for w in range(i, j):
+            wtxt = ''
+            for k in wsyl[w]:
+                c = ''.join(ch for ch in clean_word(syls[k].text) if ch in chars)
+                spans.append((k, pos, pos + len(c)))
+                pos += len(c)
+                wtxt += c
+            words.append(wtxt)
+        ct: list = []
+        r = align_words(lp, chars, words, ta, tb, ct)
+        if not ct:
+            continue
+        for k, a, b in spans:
+            if a < b and a < len(ct) and ct[a] is not None and out[k] is None:
+                out[k] = ct[a]
+    # Zeiten müssen ansteigen: Ausreißer verwerfen (feste Anker haben Vorrang)
+    last = -1.0
+    for k in range(len(out)):
+        if out[k] is None:
+            continue
+        if out[k] <= last + 0.04 and st[k] is None:
+            out[k] = None
+            continue
+        last = out[k]
     return out

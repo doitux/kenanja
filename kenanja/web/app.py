@@ -275,7 +275,7 @@ def put_settings(data: dict):
 def _sprache_status() -> dict:
     from ..audio import asr as A
     job = JOBS.get('__sprache', {})
-    return {'verfuegbar': A.available(), 'bereit': A.model_ready(), 'laeuft': job.get('status') == 'läuft',
+    return {'verfuegbar': A.available(), 'bereit': A.all_ready(), 'laeuft': job.get('status') == 'läuft',
             'fortschritt': job.get('fortschritt', 0.0), 'fehler': job.get('fehler', '')}
 
 
@@ -333,7 +333,7 @@ def _write_meta(pid, **kw):
     meta.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding='utf-8')
 
 
-def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
+def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str, tempo_faktor: float = 1.0):
     from ..audio.analysis import build_song
     job = JOBS[pid]
     try:
@@ -341,7 +341,8 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str):
             job.update(schritt=name, fortschritt=round(frac, 3))
         # Zwischenspeicher (getrennte Spuren) im Projekt – wird mit dem Projekt gelöscht
         d = projects_dir() / pid
-        res = build_song(audio, text or None, title=title, authors=authors, progress=prog, cache=sub(d, 'analyse'))
+        res = build_song(audio, text or None, title=title, authors=authors, progress=prog, cache=sub(d, 'analyse'),
+                         tempo_faktor=tempo_faktor)
         song = res.song
         song.audio = str(audio)
         old = d / SONG_FILE
@@ -408,10 +409,13 @@ def reanalyse(pid: str, data: dict):
     meta = json.loads((d / 'projekt.json').read_text(encoding='utf-8'))
     text = data.get('text', '')
     (d / 'liedtext.txt').write_text(text, encoding='utf-8')
+    tf = float(data.get('tempo_faktor', meta.get('tempo_faktor', 1.0)) or 1.0)
+    tf = tf if tf in (0.5, 1.0, 2.0) else 1.0
     JOBS[pid] = {'status': 'analyse', 'fortschritt': 0.0, 'schritt': 'Start'}
-    _write_meta(pid, status='analyse')
+    _write_meta(pid, status='analyse', tempo_faktor=tf)
     threading.Thread(target=_run_analysis, args=(pid, d / meta['audio'], text, data.get('titel') or meta['titel'],
-                                                 data.get('autoren') or meta.get('autoren', '')), daemon=True).start()
+                                                 data.get('autoren') or meta.get('autoren', ''), tf),
+                     daemon=True).start()
     return {'ok': True}
 
 

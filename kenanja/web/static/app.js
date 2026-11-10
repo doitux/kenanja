@@ -65,7 +65,7 @@ async function sprachBox(target = '#sprachbox') {
     clearTimeout(SPRACH_TIMER); SPRACH_TIMER = setTimeout(() => sprachBox(target), 1500); return;
   }
   box.innerHTML = `<div class="hint"><b>Tipp:</b> Mit der Spracherkennung trifft Kenanja Melodie und Text deutlich besser
-    (die Wörter werden dort angelegt, wo sie gesungen werden). Einmaliger Download, ca. 650 MB, läuft danach ohne Internet.
+    (die Wörter werden dort angelegt, wo sie gesungen werden). Einmaliger Download, ca. 1 GB, läuft danach ohne Internet.
     ${st.fehler ? `<br><span class="danger-text">${esc(st.fehler)}</span>` : ''}
     <div style="margin-top:8px"><button class="small" onclick="sprachLaden('${target}')">Spracherkennung herunterladen</button></div></div>`;
 }
@@ -174,6 +174,10 @@ function tabSong() {
    <p class="muted small">Wenn der Text noch fehlt oder vieles falsch zugeordnet ist: Text hier (in Sing-Reihenfolge) einfügen und neu analysieren.
    Die Spurtrennung ist schon erledigt, das geht jetzt schnell.</p>
    <textarea id="s_full" class="lyrics">${esc(P.liedtext)}</textarea>
+   <label>Notenwerte (Tempo der Notation)</label>
+   <select id="s_tf">${[[1, 'wie erkannt'], [2, 'doppeltes Tempo (weniger Sechzehntel)'], [0.5, 'halbes Tempo']].map(([v, t]) =>
+     `<option value="${v}" ${(+(P.meta.tempo_faktor || 1)) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+   <p class="muted small">Viele Lieder lassen sich in zwei Tempi notieren (z.&nbsp;B. 65 oder 130 bpm). Wenn das Leadsheet zu viele Sechzehntel hat, „doppeltes Tempo“ wählen.</p>
    <div class="row"><button onclick="reanalyse()">Neu analysieren</button></div></div>`;
 }
 function fmtTime(t) { t = Math.max(0, t); return Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0'); }
@@ -191,7 +195,8 @@ async function saveSections() {
 }
 async function copySection(id) { P.song = await api(`${pu(P.id)}/abschnitt-kopieren/${id}`, {method: 'POST'}); render(); }
 async function reanalyse() {
-  await api(`${pu(P.id)}/neu-analysieren`, {method: 'POST', body: {text: $('#s_full').value, titel: P.song.title, autoren: P.song.authors}});
+  await api(`${pu(P.id)}/neu-analysieren`, {method: 'POST', body: {text: $('#s_full').value, titel: P.song.title, autoren: P.song.authors,
+    tempo_faktor: +($('#s_tf') ? $('#s_tf').value : 1)}});
   openProject(P.id);
 }
 
