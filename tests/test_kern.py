@@ -91,3 +91,16 @@ def test_spracherkennung_woerter_verankern():
     # ein Wort der Aufnahme wird nicht zweimal verwendet
     used = [x for x in t if x is not None]
     assert len(used) == len(set(used))
+
+
+def test_liedtext_chorblatt_format():
+    """Chortext-Blatt: Kopfzeilen, Regie-Pfeile, Spalten mit Einwürfen, Silbenstriche, Wiederholung per Überschrift."""
+    from kenanja.audio.analysis import parse_lyrics
+    txt = ('Mein Lied\nA. Autor / B. Autor - v1.0\n\nIntro\n\nVerse 1: → alle (einstimmig)\n'
+           'Der Morgen kommt ganz leise\nund alles wird hell\n\nChorus 1: → Frauen\n'
+           'Wir singen laut\t\tla - la\tWir singen froh\t\tla - la\n\nVerse 2\nDie Sonne steigt\n\nChorus\n')
+    b = parse_lyrics(txt)
+    assert [x.label for x in b] == ['Verse 1', 'Chorus 1', 'Verse 2', 'Chorus']
+    assert b[0].lines == ['Der Morgen kommt ganz leise', 'und alles wird hell']
+    assert b[1].lines == ['Wir singen laut lala', 'Wir singen froh lala']
+    assert b[3].lines == b[1].lines

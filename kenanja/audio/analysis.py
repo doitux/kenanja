@@ -454,9 +454,12 @@ def detect_language(text: str) -> str:
     return 'de' if de >= en else 'en'
 
 
-SECTION_HEAD = re.compile(r'^\s*[\[(]?\s*(intro|vers|verse|strophe|pre-?chorus|pre-?refrain|chorus|refrain|bridge|'
-                          r'interlude|zwischenspiel|outro|ende|tag|coda|solo|instrumental|choral)\s*(\d*)\s*[\])]?\s*:?\s*$',
-                          re.I)
+SECTION_HEAD = re.compile(r'^\s*[\[(]?\s*(intro|vers|verse|strophe|pre-?chorus|pre-?refrain|post-?chorus|post-?refrain|'
+                          r'chorus|refrain|bridge|interlude|zwischenspiel|zwischenteil|outro|ende|ending|schluss|tag|coda|'
+                          r'solo|instrumental|choral|vamp)\s*(\d*)\s*[\])]?\s*:?\s*$', re.I)
+ARROW = re.compile(r'\s*(→|->|=>).*$')           # Regie-Hinweise wie „→ alle“ / „→ Frauen“
+SYL_DASH = re.compile(r'(?<=\w)\s+[-–]\s+(?=\w)')  # „Je – sus“, „ho - ly“: Silben eines Wortes
+COLUMNS = re.compile(r'\t+|\s{3,}')
 
 
 @dataclass
@@ -511,7 +514,37 @@ def parse_lyrics(text: str) -> list[TextBlock]:
     Zeilen wie '(Ladies)' / '(Men)' werden als Sänger-Hinweis gemerkt, '(x2)' wiederholt die Zeile."""
     blocks, cur = [], TextBlock(None, [])
     cur.cues = []
-    for raw in clean_lyrics_text(text).splitlines():
+    raw_lines = [ARROW.sub('', l).rstrip() for l in clean_lyrics_text(text).splitlines()]
+    # Kopfzeilen (Titel, Autoren, Version) vor der ersten Überschrift weglassen, wenn diese gleich folgt
+    nonempty = [i for i, l in enumerate(raw_lines) if l.strip()]
+    first_head = next((i for i in nonempty[:6] if SECTION_HEAD.match(raw_lines[i].strip())), None)
+    if first_head is not None and 0 < sum(1 for i in nonempty if i < first_head) <= 3:
+        raw_lines = raw_lines[first_head:]
+    expanded = []
+    for l in raw_lines:
+        # mehrspaltige Zeilen (Tabulatoren, große Abstände) nacheinander singen
+        parts = [SYL_DASH.sub('', p.strip()) for p in COLUMNS.split(l.strip()) if p.strip()] if l.strip() else []
+        merged_parts: list[str] = []
+        for p_ in parts:   # Einwürfe wie „ho - ly“ gehören zur Zeile davor
+            if merged_parts and len(p_.split()) <= 2:
+                merged_parts[-1] += ' ' + p_
+            else:
+                merged_parts.append(p_)
+        for p_ in merged_parts:   # sehr lange Zeilen an Satzenden teilen
+            if len(p_.split()) > 12:
+                for q in [q.strip() for q in re.split(r'(?<=[.!?;])\s+', p_) if q.strip()]:
+                    w = q.split()
+                    commas = [k for k, x in enumerate(w[:-1]) if x.endswith(',')]
+                    if len(w) > 12 and commas:
+                        k = min(commas, key=lambda k: abs(k + 1 - len(w) / 2))
+                        expanded += [' '.join(w[:k + 1]), ' '.join(w[k + 1:])]
+                    else:
+                        expanded.append(q)
+            else:
+                expanded.append(p_)
+        if not merged_parts:
+            expanded.append('')
+    for raw in expanded:
         line = raw.strip()
         m = SECTION_HEAD.match(line)
         if m:
@@ -543,6 +576,10 @@ def parse_lyrics(text: str) -> list[TextBlock]:
     for k, b in enumerate(blocks):
         if not b.lines and b.label:
             src = next((x for x in blocks[:k] if x.label and x.label.lower() == b.label.lower() and x.lines), None)
+            if src is None:   # „Chorus“ nach „Chorus 1“: letzter Block gleicher Art
+                base = re.sub(r'[\s\d]+$', '', b.label.lower())
+                src = next((x for x in reversed(blocks[:k]) if x.label and x.lines
+                            and re.sub(r'[\s\d]+$', '', x.label.lower()) == base), None)
             if src:
                 b.lines = list(src.lines)
     blocks = [b for b in blocks if b.lines]
@@ -995,9 +1032,6 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 vnotes.append(vn)
                 note_syl[id(vn)] = sy
             line_ranges.append((li, ln[0][0], ln[-1][1]))
-        octv = _norm_octave(vnotes)
-        for n in vnotes:
-            n.pitch += octv
         # immer Frauenlage: Zeilen, die (z. B. von einem Mann) eine Oktave tiefer/höher gesungen wurden, einzeln holen
         by_line: dict[int, list] = {}
         for vn in vnotes:
@@ -1025,6 +1059,10 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 d = vn.pitch - ref
                 if abs(d) >= 8.5 and abs(d - 12 * np.sign(d)) <= 5:
                     vn.pitch -= 12 * int(np.sign(d))
+        # erst jetzt (ohne Ausreißer-Zeilen und -Töne) die Oktave der ganzen Melodie festlegen
+        octv = _norm_octave(vnotes)
+        for n in vnotes:
+            n.pitch += octv
         rep['zeilen'] = f'{sum(1 for r in res_lines if r)} von {len(lines)} Zeilen zugeordnet'
         rep['angeglichen'] = changed
         rep.update(tempo=round(tempo, 1), key=key_name(key_tpc, minor), noten=len(vnotes))
