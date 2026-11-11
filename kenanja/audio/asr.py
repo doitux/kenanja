@@ -508,6 +508,7 @@ def fill_syllable_times(syls: list, st: list, lp: np.ndarray, chars: str, t_end:
         for k, a, b in spans:
             if a < b and a < len(ct) and ct[a] is not None and out[k] is None:
                 out[k] = ct[a]
+    out = _repair_lines(syls, out, lp, chars, t_end)
     # Zeiten müssen ansteigen: Ausreißer verwerfen (feste Anker haben Vorrang)
     last = -1.0
     for k in range(len(out)):
@@ -517,4 +518,55 @@ def fill_syllable_times(syls: list, st: list, lp: np.ndarray, chars: str, t_end:
             out[k] = None
             continue
         last = out[k]
+    return out
+
+
+def _suspicious(ts: list) -> bool:
+    v = [t for t in ts if t is not None]
+    if len(v) < 3:
+        return False
+    io = np.diff(v)
+    return bool((io < 0.07).sum() >= 2 or (io > 2.5).any() or (io < 0).any())
+
+
+def _repair_lines(syls: list, out: list, lp: np.ndarray, chars: str, t_end: float) -> list:
+    """Zeilen mit unplausiblen Silbenzeiten (zusammengequetscht, riesige Lücken – meist ein falsch zugeordnetes
+    Wort der Spracherkennung) ohne ihre inneren Anker neu ausrichten, begrenzt durch die Nachbarzeilen."""
+    out = list(out)
+    lines: dict = {}
+    for k, s_ in enumerate(syls):
+        lines.setdefault(s_.line, []).append(k)
+    order = sorted(lines)
+    for q, li in enumerate(order):
+        ks = lines[li]
+        if not _suspicious([out[k] for k in ks]):
+            continue
+        prev = [out[k] for k in lines[order[q - 1]] if out[k] is not None] if q > 0 else []
+        nxt = [out[k] for k in lines[order[q + 1]] if out[k] is not None] if q + 1 < len(order) else []
+        own = [out[k] for k in ks if out[k] is not None]
+        t0 = (max(prev) + 0.15) if prev else (min(own) - 2.0 if own else 0.0)
+        t1 = (min(nxt) - 0.05) if nxt else min(t_end, (max(own) + 2.0) if own else t_end)
+        if t1 - t0 < 0.18 * len(ks) or t1 - t0 > 1.6 * len(ks) + 6:
+            continue
+        words, spans, pos = [], [], 0
+        wtxt = ''
+        for k in ks:
+            if syls[k].syllabic in ('single', 'begin') and wtxt:
+                words.append(wtxt)
+                wtxt = ''
+            c = ''.join(ch for ch in clean_word(syls[k].text) if ch in chars)
+            spans.append((k, pos, pos + len(c)))
+            pos += len(c)
+            wtxt += c
+        if wtxt:
+            words.append(wtxt)
+        ct: list = []
+        align_words(lp, chars, words, max(0.0, t0), t1, ct)
+        if not ct:
+            continue
+        new = {k: ct[a] for k, a, b in spans if a < b and a < len(ct) and ct[a] is not None}
+        cand = [new.get(k) for k in ks]
+        if not _suspicious(cand) and sum(c is not None for c in cand) >= 0.7 * len(ks):
+            for k in ks:
+                out[k] = new.get(k)
     return out

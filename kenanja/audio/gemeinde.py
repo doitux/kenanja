@@ -31,7 +31,8 @@ class Track:
 def pitch_track(y: np.ndarray, sr: int = 22050, hop: int = 256) -> Track:
     import librosa
     from scipy.ndimage import maximum_filter1d
-    f0, vflag, _ = librosa.pyin(y, fmin=90, fmax=1000, sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan)
+    from .f0 import track as f0_track
+    f0, vflag = f0_track(y, sr, hop)
     midi = librosa.hz_to_midi(f0)
     midi[~vflag] = np.nan
     env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, lag=2, max_size=3, fmin=150, fmax=8000)
@@ -893,15 +894,19 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
     lines: list[Optional[list[LNote]]] = []
     anchors: list[Optional[int]] = []
     STATS['pfad'] = {}
-    # Raster-Vorliebe: Bei dichtem Text (Silben meist im Sechzehntelabstand) bleiben Sechzehntel erlaubt,
-    # sonst werden Achtel/Viertel bevorzugt
+    # Raster-Vorliebe je Lied: Liegen die gesungenen Silben fast nur auf Achtelstellen, wird streng im
+    # Achtelraster notiert (Sechzehntel nur, wenn eindeutig). Liegen viele Silben auf Sechzehntel-Offbeats
+    # (punktierte Rhythmen, Balladen), bleiben Sechzehntel erlaubt. (Aus 10 Referenz-Leadsheets abgeleitet.)
     STATS['raster'] = (0.7, 0.3)
-    if syl_times is not None:
-        per = float(np.median(np.diff(beats))) if len(beats) > 1 else 0.5
-        d = [b - a for ts_ in syl_times if ts_ for a, b in zip(ts_, ts_[1:]) if a is not None and b is not None and b > a]
-        if d and float(np.median(d)) / per <= 0.32:
-            STATS['raster'] = (0.3, 0.1)
-        STATS['silbenabstand'] = float(np.median(d)) / per if d else None
+    if syl_times is not None and len(beats) > 4:
+        ts_all = np.array([t for ts_ in syl_times if ts_ for t in ts_ if t is not None]) + 0.05
+        if len(ts_all) >= 20:
+            fr = np.interp(ts_all, beats, np.arange(len(beats))) % 1
+            d16 = np.minimum(np.abs(fr - 0.25), np.abs(fr - 0.75))
+            d8 = np.minimum.reduce([np.abs(fr), np.abs(fr - 0.5), np.abs(fr - 1)])
+            share16 = float(np.mean(d16 < d8))
+            STATS['sechzehntel_anteil'] = share16
+            STATS['raster'] = (4.0, 2.0) if share16 < 0.36 else (0.3, 0.1)
     # Zeilenanfänge aus der Spracherkennung (für das Ende der jeweils vorigen Zeile)
     line_t0 = [None] * len(counts)
     if syl_times is not None:
@@ -992,6 +997,20 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
     changed = unify_repeats(lines, anchors, texts, scale, struct, cl.bpb * SUB)
     if dump:
         STATS['dump']['einheit'] = [[n.cell for n in ln] if ln else None for ln in lines]
+    # Zeilenende wie im Leadsheet: letzter Ton mindestens bis zum nächsten Schlag (eher eine Viertel), auf einem
+    # Schlag endend – aber nie in die nächste Zeile hinein
+    starts = sorted(ln[0].cell for ln in lines if ln)
+    for ln in lines:
+        if not ln:
+            continue
+        last = ln[-1]
+        nxt = next((c for c in starts if c > last.cell), None)
+        want = max(last.end, last.cell + SUB)
+        want = ((want + SUB - 1) // SUB) * SUB                  # auf den Schlag aufrunden
+        if nxt is not None:
+            want = min(want, nxt)
+        if want > last.cell:
+            last.end = want
     out = []
     for ln in lines:
         if not ln:

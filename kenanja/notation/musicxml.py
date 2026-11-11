@@ -110,6 +110,61 @@ def _m21_note(n: Note, lyric_verse: int = 0, with_lyrics=True):
     return el
 
 
+_VALUES = [F(4), F(3), F(2), F(3, 2), F(1), F(3, 4), F(1, 2), F(1, 4), F(1, 8)]
+
+
+def split_duration(onset, dur, bar, rest: bool = False) -> list:
+    """Dauer innerhalb eines Takts in lesbare Notenwerte zerlegen (gebunden): höchstens einfach punktiert,
+    Schläge nur überbunden, wenn die Note auf dem Schlag oder auf der Achtel-Zwischenzählzeit beginnt und auf
+    einem Schlag endet (übliche Synkope), die Taktmitte (4/4) nur von Zählzeit 1 aus überschreiten."""
+    onset, dur = F(onset), F(dur)
+    if getattr(bar, 'den', 4) != 4 or dur <= 0:
+        return [dur]
+    L = F(bar.num)
+    mid = L / 2 if bar.num == 4 else None
+    out = []
+    o, d = onset, dur
+    while d > 0:
+        pick = None
+        for v in _VALUES:
+            if v > d:
+                continue
+            e = o + v
+            if e > L:
+                continue
+            inner = [k for k in range(int(o) + 1, int(e) + (0 if e == int(e) else 1)) if o < k < e]
+            ok = True
+            if inner:
+                if o % 1 == 0:
+                    ok = True
+                elif o % F(1, 2) == 0 and e % 1 == 0 and v <= F(3, 2) and not rest:
+                    ok = True                       # Synkope: Achtel-Zwischenzählzeit bis auf einen Schlag
+                else:
+                    ok = False
+                if ok and mid is not None and o < mid < e and o != 0:
+                    ok = False
+                if ok and v in (F(3), F(3, 2)) and o % 1 == 0 and o not in (0, 1, 2) and mid is not None:
+                    ok = False
+            if ok and v == F(3) and mid is not None and o != 0 and o != 1:
+                ok = False
+            if ok and o % F(1, 2) == F(1, 4):          # auf dem Sechzehntel-Offbeat: 16tel oder bis zum Schlag
+                ok = v in (F(1, 4), F(1, 8)) or (v == F(3, 4) and e % 1 == 0 and not rest)
+            if ok and o % F(1, 2) == 0 and o % 1 != 0 and v == F(3, 4):
+                ok = False                                # punktierte Achtel nicht von der Achtel-Zwischenzählzeit
+            if ok and rest and v != v.limit_denominator(1) and v not in (F(1, 2), F(1, 4), F(1, 8)):
+                # Pausen: punktierte Werte nur, wenn sie auf dem Schlag beginnen
+                ok = o % 1 == 0 and v in (F(3, 2), F(3))
+            if ok:
+                pick = v
+                break
+        if pick is None:
+            pick = min(d, F(1, 8)) if d >= F(1, 8) else d
+        out.append(pick)
+        o += pick
+        d -= pick
+    return out
+
+
 def _ts_str(bar) -> str:
     return f'{bar.num}/{bar.den}'
 
@@ -176,34 +231,53 @@ def build_score(song: Song, lbars: list[LBar], parts: list[str], lead_name: str 
             seq = sorted([n for n in notes], key=lambda n: n.onset)
             for n in seq:
                 if n.onset > filled:
-                    r = note.Rest()
-                    r.duration.quarterLength = float(n.onset - filled)
-                    m.insert(float(filled), r)
+                    at = filled
+                    for pd in split_duration(filled, n.onset - filled, lb.bar, rest=True):
+                        r = note.Rest()
+                        r.duration.quarterLength = float(pd)
+                        m.insert(float(at), r)
+                        at += pd
                     filled = n.onset
                 if n.onset < filled:
                     continue
                 dur = min(n.dur, L - n.onset)
                 if dur <= 0:
                     continue
-                nn = copy.copy(n)
-                nn.dur = dur
-                el = _m21_note(nn, 0, with_lyrics=is_lead or pname in VOCAL_PARTS)
-                if n.pitch is not None:
-                    if pending_tie_stop and n.onset == 0:
-                        el.tie = tie.Tie('stop' if not n.tie else 'continue')
-                    elif n.tie:
-                        el.tie = tie.Tie('start')
-                    pending_tie_stop = bool(n.tie)
-                else:
-                    pending_tie_stop = False
-                m.insert(float(n.onset), el)
+                pieces = split_duration(n.onset, dur, lb.bar) if n.pitch is not None or True else [dur]
+                at = n.onset
+                for pi, pd in enumerate(pieces):
+                    nn = copy.copy(n)
+                    nn.dur = pd
+                    if pi > 0:
+                        nn.lyrics = {}
+                    el = _m21_note(nn, 0, with_lyrics=is_lead or pname in VOCAL_PARTS)
+                    if n.pitch is not None:
+                        first, last = pi == 0, pi == len(pieces) - 1
+                        starts = (not last) or bool(n.tie)            # Bindebogen zum nächsten Stück/Takt
+                        stops = (not first) or (pending_tie_stop and n.onset == 0)
+                        if starts and stops:
+                            el.tie = tie.Tie('continue')
+                        elif starts:
+                            el.tie = tie.Tie('start')
+                        elif stops:
+                            el.tie = tie.Tie('stop')
+                    m.insert(float(at), el)
+                    at += pd
+                pending_tie_stop = bool(n.tie) if n.pitch is not None else False
                 filled = n.onset + dur
             if filled < L:
-                r = note.Rest()
-                r.duration.quarterLength = float(L - filled)
                 if filled == 0:
+                    r = note.Rest()
+                    r.duration.quarterLength = float(L)
                     r.fullMeasure = True
-                m.insert(float(filled), r)
+                    m.insert(0.0, r)
+                else:
+                    at = filled
+                    for pd in split_duration(filled, L - filled, lb.bar, rest=True):
+                        r = note.Rest()
+                        r.duration.quarterLength = float(pd)
+                        m.insert(float(at), r)
+                        at += pd
             if lb.last and i + 1 < len(lbars):
                 m.rightBarline = m21bar.Barline('double')
             if i == len(lbars) - 1:

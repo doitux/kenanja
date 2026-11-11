@@ -155,3 +155,18 @@ def test_seltene_spitzentoene_unsicher():
     sec = Section(id='a', label='A', bars=[bar])
     assert mark_rare_extremes([sec]) == 1
     assert [n.pitch for n in bar.melody if n.unsicher] == [72]
+
+
+def test_notenwerte_lesbar_zerlegt():
+    from fractions import Fraction as F
+    from kenanja.notation.musicxml import split_duration
+
+    class B:
+        num, den = 4, 4
+    b = B()
+    assert split_duration(0, 4, b) == [4]
+    assert split_duration(F(1, 2), F(3, 2), b) == [F(3, 2)]            # Synkope Achtel-Zwischenzählzeit bis Schlag
+    assert split_duration(F(1, 4), F(15, 4), b) == [F(3, 4), 1, 2]      # keine dreifach punktierten Noten
+    assert split_duration(F(1, 4), F(15, 4), b, rest=True)[0] == F(1, 4)
+    assert all(v in (F(4), F(3), F(2), F(3, 2), F(1), F(3, 4), F(1, 2), F(1, 4), F(1, 8))
+               for v in split_duration(F(3, 4), F(13, 4), b))

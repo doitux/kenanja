@@ -325,8 +325,8 @@ def vocal_notes(voc_mono22: np.ndarray, sr: int = 22050, min_dur: float = 0.09, 
     hop = 256
     rms = librosa.feature.rms(y=voc_mono22, frame_length=2048, hop_length=hop)[0]
     t = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
-    f0, voiced, prob = librosa.pyin(voc_mono22, fmin=90, fmax=1000, sr=sr, frame_length=2048, hop_length=hop,
-                                    fill_na=np.nan)
+    from .f0 import track as f0_track
+    f0, voiced = f0_track(voc_mono22, sr, hop)
     n = min(len(f0), len(rms))
     f0, voiced, rms, t = f0[:n], voiced[:n], rms[:n], t[:n]
     midi = librosa.hz_to_midi(f0)
