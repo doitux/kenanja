@@ -89,7 +89,8 @@ def main():
         # 1. Projekt anlegen (wie das Formular „Neuer Song“)
         b = uuid.uuid4().hex
         audio = Path(a.audio)
-        fields = {"titel": a.titel, "autoren": "Test Autor", "text": Path(a.text).read_text(encoding="utf-8")}
+        fields = {"titel": a.titel, "autoren": "Test Autor", "text": Path(a.text).read_text(encoding="utf-8"),
+                  "melodie": "zweite", "ablauf": "text"}
         body = b"".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
                         for k, v in fields.items())
         body += (f'--{b}\r\nContent-Disposition: form-data; name="audio"; filename="{audio.name}"\r\n'
@@ -136,6 +137,14 @@ def main():
         d = c.req(q)
         assert len(d["song"]["sections"]) == len(song["sections"]) + 1, "Abschnitt kopieren hat nichts angelegt"
         step("Abschnitt kopiert")
+
+        assert d["song"]["notes"].get("ablauf_quelle") == "text", "Ablauf nicht wie im Liedtext"
+        r = c.json(q + "/ablauf", {"quelle": "audio"})
+        assert r["song"]["form"] and r["song"]["notes"]["ablauf_quelle"] == "audio"
+        r = c.json(q + "/ablauf", {"quelle": "text"})
+        assert r["song"]["form"], "Ablauf aus dem Liedtext leer"
+        step(f"Ablauf umgeschaltet (Text: {len(r['song']['form'])} Teile, fehlt: {r['fehlt']}); "
+             f"Trennung {rep.get('stimmtrennung')}, Melodie {rep.get('melodie')}")
 
         # 4. Vorschauen
         for art in ("chordsheet", "chortext", "gitarre"):
