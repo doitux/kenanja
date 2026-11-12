@@ -4,7 +4,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 
 ROOT = Path(SPECPATH).parent
 datas = [(str(ROOT / 'kenanja' / 'data'), 'kenanja/data'),
-         (str(ROOT / 'kenanja' / 'web' / 'static'), 'kenanja/web/static')]
+         (str(ROOT / 'kenanja' / 'web' / 'static'), 'kenanja/web/static'),
+         (str(ROOT / 'kenanja' / 'audio' / 'modelle'), 'kenanja/audio/modelle')]
 # music21 ohne seinen großen Notenkorpus (wird nicht gebraucht)
 datas += [d for d in collect_data_files('music21') if '/corpus/' not in d[0].replace('\\', '/')]
 datas += collect_data_files('pyphen') + collect_data_files('librosa')

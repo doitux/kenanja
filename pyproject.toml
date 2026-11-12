@@ -27,4 +27,4 @@ kenanja = "kenanja.cli:main"
 include = ["kenanja*"]
 
 [tool.setuptools.package-data]
-kenanja = ["data/*", "web/static/*"]
+kenanja = ["data/*", "web/static/*", "audio/modelle/*"]

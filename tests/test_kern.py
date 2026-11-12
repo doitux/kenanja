@@ -170,3 +170,43 @@ def test_notenwerte_lesbar_zerlegt():
     assert split_duration(F(1, 4), F(15, 4), b, rest=True)[0] == F(1, 4)
     assert all(v in (F(4), F(3), F(2), F(3, 2), F(1), F(3, 4), F(1, 2), F(1, 4), F(1, 8))
                for v in split_duration(F(3, 4), F(13, 4), b))
+
+
+def test_ablauf_aus_text_oder_leadsheet():
+    from kenanja.ablauf import form_from_labels
+    def sec(i, lab, kind, instr=False):
+        s = Section(id=f's{i}', label=lab, kind=kind, bars=[Bar(4, 4)])
+        if not instr:
+            s.bars[0].melody.append(Note(F(0), F(4), 60, 14, {0: ('la', 'single')}))
+        return s
+    song = Song(sections=[sec(0, 'Intro', 'intro', True), sec(1, 'Verse 1', 'verse'), sec(2, 'Chorus', 'chorus'),
+                          sec(3, 'Verse 2', 'verse'), sec(4, 'Chorus', 'chorus'), sec(5, 'Bridge', 'bridge'),
+                          sec(6, 'Chorus', 'chorus'), sec(7, 'Outro', 'outro', True)])
+    form, fehlt = form_from_labels(song, ['Strophe 1', 'Refrain', 'Strophe 2', 'Refrain', 'Refrain', 'Bridge', 'Refrain', 'Tag'])
+    assert [f.section for f in form] == ['s0', 's1', 's2', 's3', 's4', 's6', 's5', 's2', 's7']
+    assert fehlt == ['Tag']
+    assert form[1].label == 'Strophe 1'
+
+
+def test_zweite_stimme_nur_bei_eigenem_verlauf():
+    from kenanja.audio.gemeinde import second_voice
+    assert second_voice([60, 62, 64, 65], [64, 65, 67, 69]) == [64, 65, 67, 69]     # Terz darüber
+    assert second_voice([60, 62, 64, 65], [60, 62, 67, 65]) == [None] * 4          # einzelner Ausreißer
+    assert second_voice([60, 62, 64, 65], [72, 74, 76, 77]) == [None] * 4          # nur Oktave
+    assert second_voice([60, 62], None) == [None, None]
+
+
+def test_melodie_vom_ersten_durchgang():
+    from kenanja.audio.gemeinde import copy_first_melody
+
+    class N:
+        def __init__(self, cell, pitch):
+            self.cell, self.pitch, self.fpitch = cell, pitch, float(pitch)
+    l1 = [N(0, 60), N(4, 62), N(8, 64)]
+    l2 = [N(32, 64), N(36, 65), N(40, 67)]             # später: Leadsänger singt eine Terz höher
+    l3 = [N(64, 60), N(68, 62), N(70, 62), N(72, 64)]  # andere Silbenzahl
+    lines = [l1, l2, l3]
+    n = copy_first_melody(lines, [0, 32, 64], ['verse', 'verse', 'verse'], [1, 1, 1], 16)
+    assert [x.pitch for x in l2] == [60, 62, 64]
+    assert [x.pitch for x in l3] == [60, 62, 62, 64]
+    assert n == 3

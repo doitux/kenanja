@@ -13,69 +13,173 @@ let BRIDGE = null;     // im eigenen Kenanja-Fenster: Ordnerauswahl, Links im no
 if (window.qt && window.qt.webChannelTransport && window.QWebChannel) new QWebChannel(qt.webChannelTransport, ch => { BRIDGE = ch.objects.bridge; });
 let LIST = [];
 let P = null;          // aktuelles Projekt
-let TAB = 'song';
 let SETTINGS = null;
 const KINDS = {intro: 'Intro', verse: 'Strophe', prechorus: 'Pre-Chorus', chorus: 'Chorus', bridge: 'Bridge', interlude: 'Zwischenspiel',
   solo: 'Solo', outro: 'Outro', tag: 'Tag', choral: 'Choral', other: 'Sonstiges'};
 const ROLES = {auto: 'automatisch', tacet: 'tacet', pad: 'Liegetöne', counter: 'Gegenstimme', build: 'Steigerung', hook: 'Solo/Hook',
   melody: 'Melodie', high: 'hoch/Finale', roots: 'Grundtöne', tenor: 'Tenorlage', pulse: 'Achtel-Puls'};
 
+// „Mehr einstellen“: einmal aufgeklappt, bleiben alle Details sichtbar (auch in den anderen Schritten)
+let MEHR = false;
+try { MEHR = localStorage.getItem('kenanja_mehr') === '1'; } catch (e) {}
+function mehrBtn(fn) {
+  return `<div class="mehr"><button class="link" onclick="toggleMehr(${fn})">${MEHR ? 'Weniger anzeigen ▴' : 'Willst du noch mehr einstellen? ▾'}</button></div>`;
+}
+function toggleMehr(fn) {
+  if (P && STEP_COLLECT[STEP]) STEP_COLLECT[STEP]();
+  if (!P) neuSammeln();
+  MEHR = !MEHR; try { localStorage.setItem('kenanja_mehr', MEHR ? '1' : '0'); } catch (e) {}
+  fn();
+}
+function stepper(steps, cur, go) {
+  return `<div class="stepper">${steps.map(([k, t], i) => `<button class="${i === cur ? 'active' : i < cur ? 'done' : ''}" onclick="${go}(${i})">
+    <span class="num">${i < cur ? '✓' : i + 1}</span>${t}</button>`).join('<span class="sep"></span>')}</div>`;
+}
+function navBar(cur, n, go, last = '') {
+  return `<div class="navbar">${cur > 0 ? `<button onclick="${go}(${cur - 1})">← Zurück</button>` : '<span></span>'}
+    ${cur < n - 1 ? `<button class="primary big" onclick="${go}(${cur + 1})">Weiter →</button>` : last}</div>`;
+}
+function choice(name, val, opts) {   // große Auswahlknöpfe statt Dropdown
+  return `<div class="choices">${opts.map(([v, t, d]) => `<label class="choice ${String(v) === String(val) ? 'on' : ''}">
+    <input type="radio" name="${name}" value="${v}" ${String(v) === String(val) ? 'checked' : ''}
+      onchange="this.closest('.choices').querySelectorAll('.choice').forEach(c=>c.classList.toggle('on', c.contains(this)))">
+    <b>${t}</b>${d ? `<span>${d}</span>` : ''}</label>`).join('')}</div>`;
+}
+const radio = name => (document.querySelector(`input[name="${name}"]:checked`) || {}).value;
+
+const MELODIE = [
+  ['erste', 'Melodie wie beim ersten Mal', 'Standard. Die Melodie aus Strophe 1, Refrain 1 … gilt für alle Wiederholungen – auf deren Text gelegt.'],
+  ['zweite', '+ zweite Stimme des Leadsängers', 'Singt der Leadsänger in einer Wiederholung eine andere Stimme, wird sie zusätzlich zur Melodie notiert.'],
+  ['mehrstimmig', 'Mehrstimmig', 'Die Stimmen der Gruppe bzw. der Backgroundsänger werden zusätzlich notiert, wo sie neben der Melodie eigene Töne singen.']];
+const ABLAUF = [
+  ['audio', 'Wie in der Aufnahme', 'So, wie der Song im Audio gespielt wird – mit Intro, Zwischenspielen und Wiederholungen.'],
+  ['text', 'Wie im Liedtext', 'In der Reihenfolge deines eingefügten Textes.'],
+  ['leadsheet', 'Wie im Leadsheet', 'Nach einem vorhandenen Leadsheet (MuseScore-Datei).']];
+const TEMPO = [[1, 'wie erkannt', ''], [2, 'doppeltes Tempo', 'weniger Sechzehntel'], [0.5, 'halbes Tempo', 'weniger lange Noten']];
+
 // ------------------------------------------------------------- Start ----
+let NEU = {step: 0, file: null, titel: '', autoren: '', text: '', ablauf: 'audio', melodie: 'erste', tf: 1, leadsheet: null};
+const NEU_STEPS = [['audio', 'Aufnahme'], ['text', 'Liedtext'], ['los', 'Analysieren']];
 async function showHome() {
   P = null;
-  const list = LIST = await api('/api/projekte');
-  app.innerHTML = `
-  <div class="grid2">
-   <div class="card">
-    <h1>Neuer Song</h1>
-    <p class="muted small">MP3 (oder WAV) auswählen, Titel und Liedtext eintragen. Kenanja hört Takt, Tonart, Akkorde, Ablauf und Melodie heraus
-    und legt den Text auf die Melodie. Danach kannst du alles prüfen und ändern.</p>
-    <label>Audio-Datei</label><input type="file" id="f_audio" accept="audio/*,.mp3,.wav,.flac,.m4a">
-    <div class="grid2"><div><label>Titel</label><input type="text" id="f_titel"></div>
-    <div><label>Autoren (Text/Musik)</label><input type="text" id="f_autoren"></div></div>
-    <div class="spread"><label>Liedtext – in Sing-Reihenfolge, Überschriften wie [Verse 1], [Chorus]</label>
-      <button class="small" onclick="searchLyrics()">Text suchen ↗</button></div>
-    <textarea id="f_text" class="lyrics" placeholder="[Verse 1]&#10;Erste Zeile …&#10;Zweite Zeile …&#10;&#10;[Chorus]&#10;…&#10;&#10;Wiederholungen bitte ausschreiben – oder nur die Überschrift erneut setzen (z. B. [Chorus]), dann wird der Text übernommen."></textarea>
-    <div class="row" style="margin-top:12px"><button class="primary" onclick="createProject()">Analysieren</button>
-      <span class="muted small">Dauer: einige Minuten (Gesang wird von der Begleitung getrennt).</span></div>
-    <div id="sprachbox"></div>
-   </div>
-   <div class="card">
-    <h2 style="margin-top:0">Deine Songs</h2>
-    ${list.length ? `<table>${list.map((p, i) => `<tr><td><a href="#" onclick="openProject(LIST[${i}].id);return false"><b>${esc(p.titel)}</b></a>
+  LIST = await api('/api/projekte');
+  app.innerHTML = `<div class="home"><div class="card" id="neu"></div>
+   <div class="card"><h2 style="margin-top:0">Deine Songs</h2>
+    ${LIST.length ? `<table>${LIST.map((p, i) => `<tr><td><a href="#" onclick="openProject(LIST[${i}].id);return false"><b>${esc(p.titel)}</b></a>
        <div class="muted small">${esc(p.autoren || '')}</div></td><td class="small">${p.status === 'analyse' ? '⏳ Analyse läuft' : p.status === 'fehler' ? '⚠️ Fehler' : '✔'}</td>
-       <td><button class="small danger" onclick="delProject(LIST[${i}].id)">Löschen</button></td></tr>`).join('')}</table>` : '<p class="muted">Noch keine Songs.</p>'}
-    <h2>Vorhandene Noten übernehmen</h2>
-    <p class="muted small">Ein Leadsheet bzw. eine Partitur aus MuseScore (.mscz) einlesen – z. B. um daraus Chord-Sheet, Streicher und Chorblatt zu erzeugen
-    oder ein in MuseScore korrigiertes Leadsheet wieder zurückzuholen.</p>
-    <input type="file" id="f_mscz" accept=".mscz,.mscx,.json"> <button onclick="importMscz()">Importieren</button>
-   </div>
-  </div>`;
-  sprachBox();
+       <td style="text-align:right"><button class="small danger" onclick="delProject(LIST[${i}].id)">Löschen</button></td></tr>`).join('')}</table>` : '<p class="muted">Noch keine Songs.</p>'}
+    ${MEHR ? `<h3 style="margin-top:22px">Vorhandene Noten übernehmen</h3>
+    <p class="muted small">Ein Leadsheet bzw. eine Partitur aus MuseScore (.mscz) als Song einlesen – z. B. um daraus Chord-Sheet, Streicher und
+    Chorblatt zu erzeugen oder ein in MuseScore korrigiertes Leadsheet zurückzuholen.</p>
+    <input type="file" id="f_mscz" accept=".mscz,.mscx,.json"> <button onclick="importMscz()">Importieren</button>` : ''}
+    ${mehrBtn('showHome')}</div></div>`;
+  neuRender();
 }
+function neuSammeln() {
+  const v = id => $('#' + id) ? $('#' + id).value : null;
+  if ($('#f_audio') && $('#f_audio').files[0]) NEU.file = $('#f_audio').files[0];
+  if ($('#f_ls') && $('#f_ls').files[0]) NEU.leadsheet = $('#f_ls').files[0];
+  if (v('f_titel') !== null) NEU.titel = v('f_titel');
+  if (v('f_autoren') !== null) NEU.autoren = v('f_autoren');
+  if (v('f_text') !== null) NEU.text = v('f_text');
+  if (radio('n_abl')) NEU.ablauf = radio('n_abl');
+  if (radio('n_mel')) NEU.melodie = radio('n_mel');
+  if (radio('n_tf')) NEU.tf = +radio('n_tf');
+}
+function neuGo(i) {
+  neuSammeln();
+  if (i > 0 && !NEU.file) { NEU.step = 0; neuRender(); return alert('Bitte zuerst die Aufnahme (MP3 oder WAV) auswählen.'); }
+  NEU.step = i; neuRender();
+}
+function neuAudio(inp) {
+  const f = inp.files[0]; if (!f) return;
+  NEU.file = f;
+  if (!$('#f_titel').value) $('#f_titel').value = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+}
+function neuRender() {
+  const box = $('#neu'); if (!box) return;
+  const s = NEU.step;
+  let body = '';
+  if (s === 0) body = `
+    <p class="muted">Kenanja hört Takt, Tonart, Akkorde, Ablauf und Melodie heraus und legt deinen Text auf die Melodie.</p>
+    <label>Aufnahme (MP3 oder WAV)</label>
+    ${NEU.file ? `<div class="row"><span class="pill">✔ ${esc(NEU.file.name)}</span><button class="small" onclick="NEU.file=null;neuRender()">andere wählen</button></div>`
+      : `<input type="file" id="f_audio" accept="audio/*,.mp3,.wav,.flac,.m4a" onchange="neuAudio(this)">`}
+    <label>Titel</label><input type="text" id="f_titel" value="${esc(NEU.titel)}">
+    ${MEHR ? `<label>Autoren (Text/Musik)</label><input type="text" id="f_autoren" value="${esc(NEU.autoren)}">` : ''}`;
+  else if (s === 1) body = `
+    <div class="spread"><label>Liedtext in Sing-Reihenfolge – Überschriften wie [Strophe 1], [Refrain]</label>
+      <button class="small" onclick="neuSammeln();searchLyrics()">Text suchen ↗</button></div>
+    <textarea id="f_text" class="lyrics" placeholder="[Strophe 1]&#10;Erste Zeile …&#10;Zweite Zeile …&#10;&#10;[Refrain]&#10;…&#10;&#10;Wiederholungen ausschreiben – oder nur die Überschrift erneut setzen (z. B. [Refrain]), dann wird der Text übernommen.">${esc(NEU.text)}</textarea>
+    <p class="muted small">Ohne Text geht es auch – dann gibt es Akkorde und Ablauf, aber keine Melodie mit Silben.</p>`;
+  else body = `
+    <div class="summary"><div><span class="muted">Aufnahme</span><b>${esc(NEU.file ? NEU.file.name : '–')}</b></div>
+     <div><span class="muted">Titel</span><b>${esc(NEU.titel || '–')}</b></div>
+     <div><span class="muted">Liedtext</span><b>${NEU.text.trim() ? NEU.text.trim().split('\n').filter(l => l.trim()).length + ' Zeilen' : 'ohne'}</b></div></div>
+    <p class="muted small">Standard: Ablauf wie in der Aufnahme, Melodie wie beim ersten Mal (für alle Wiederholungen übernommen).</p>
+    ${MEHR ? `
+     <h3>Ablauf</h3>${choice('n_abl', NEU.ablauf, ABLAUF)}
+     <div id="n_ls_box" style="${NEU.ablauf === 'leadsheet' ? '' : 'display:none'}"><label>Leadsheet (.mscz)</label>
+      ${NEU.leadsheet ? `<span class="pill">✔ ${esc(NEU.leadsheet.name)}</span> <button class="small" onclick="neuSammeln();NEU.leadsheet=null;neuRender()">andere</button>`
+        : '<input type="file" id="f_ls" accept=".mscz,.mscx">'}</div>
+     <h3>Melodie im Leadsheet</h3>${choice('n_mel', NEU.melodie, MELODIE)}
+     <h3>Notenwerte</h3>${choice('n_tf', NEU.tf, TEMPO)}
+     <p class="muted small">Viele Lieder lassen sich in zwei Tempi notieren (z.&nbsp;B. 65 oder 130 bpm). Bei sehr vielen Sechzehnteln „doppeltes Tempo“ wählen.</p>` : ''}
+    <div id="sprachbox"></div>`;
+  box.innerHTML = `<h1>Neuer Song</h1>${stepper(NEU_STEPS, s, 'neuGo')}<div class="stepbody">${body}</div>
+    ${s === 2 ? mehrBtn('neuRender') : ''}
+    ${navBar(s, 3, 'neuGo', `<button class="primary big" onclick="createProject()">Analysieren ▶</button>`)}
+    ${s === 2 ? '<p class="muted small" style="text-align:right">Dauer: einige Minuten.</p>' : ''}`;
+  document.querySelectorAll('input[name="n_abl"]').forEach(r => r.addEventListener('change', () => {
+    $('#n_ls_box').style.display = radio('n_abl') === 'leadsheet' ? '' : 'none'; }));
+  if (s === 2) sprachBox();
+}
+function searchLyrics() {
+  const q = `${NEU.titel} ${NEU.autoren} Songtext`.trim();
+  extern('https://www.google.com/search?q=' + encodeURIComponent(q));
+}
+async function createProject() {
+  neuSammeln();
+  if (!NEU.file) return neuGo(0);
+  if (NEU.ablauf === 'leadsheet' && !NEU.leadsheet) return alert('Bitte das Leadsheet auswählen – oder einen anderen Ablauf.');
+  const fd = new FormData();
+  fd.append('audio', NEU.file); fd.append('titel', NEU.titel); fd.append('autoren', NEU.autoren); fd.append('text', NEU.text);
+  fd.append('ablauf', NEU.ablauf); fd.append('melodie', NEU.melodie); fd.append('tempo_faktor', NEU.tf);
+  if (NEU.ablauf === 'leadsheet' && NEU.leadsheet) fd.append('leadsheet', NEU.leadsheet);
+  app.innerHTML = '<div class="card"><h2>Hochladen …</h2></div>';
+  try {
+    const r = await api('/api/projekte', {method: 'POST', body: fd});
+    NEU = {step: 0, file: null, titel: '', autoren: '', text: '', ablauf: 'audio', melodie: 'erste', tf: 1, leadsheet: null};
+    STEP = 0; openProject(r.id);
+  } catch (e) { alert(e.message); showHome(); }
+}
+async function importMscz() {
+  const f = $('#f_mscz').files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('datei', f);
+  const r = await api('/api/projekte/import', {method: 'POST', body: fd});
+  STEP = 0; openProject(r.id);
+}
+
 // Spracherkennung: optionales Modell (einmaliger Download), verankert Text und Melodie an den gesungenen Wörtern
 let SPRACH_TIMER = null;
 async function sprachBox(target = '#sprachbox') {
   const box = $(target); if (!box) return;
   let st; try { st = await api('/api/sprachmodell'); } catch (e) { return; }
   if (!st.verfuegbar) { box.innerHTML = ''; return; }
-  if (st.bereit) { box.innerHTML = `<p class="muted small">✔ Spracherkennung eingerichtet – Text und Melodie werden an den gesungenen Wörtern ausgerichtet.</p>`; return; }
+  if (st.bereit) { box.innerHTML = `<p class="muted small">✔ KI-Modelle eingerichtet – Text und Melodie werden an den gesungenen Wörtern ausgerichtet, Leadstimme und Gruppe sauber getrennt.</p>`; return; }
   if (st.laeuft) {
-    box.innerHTML = `<div class="hint">Spracherkennung wird geladen … ${Math.round(st.fortschritt * 100)} %<div class="progress"><div style="width:${Math.round(st.fortschritt * 100)}%"></div></div></div>`;
+    box.innerHTML = `<div class="hint">KI-Modelle werden geladen … ${Math.round(st.fortschritt * 100)} %<div class="progress"><div style="width:${Math.round(st.fortschritt * 100)}%"></div></div></div>`;
     clearTimeout(SPRACH_TIMER); SPRACH_TIMER = setTimeout(() => sprachBox(target), 1500); return;
   }
-  box.innerHTML = `<div class="hint"><b>Tipp:</b> Mit der Spracherkennung trifft Kenanja Melodie und Text deutlich besser
-    (die Wörter werden dort angelegt, wo sie gesungen werden). Einmaliger Download, ca. 1 GB, läuft danach ohne Internet.
+  box.innerHTML = `<div class="hint"><b>Tipp:</b> Mit den KI-Modellen trifft Kenanja Melodie und Text deutlich besser: Spracherkennung (die Wörter
+    werden dort angelegt, wo sie gesungen werden) und eine bessere Trennung von Leadstimme und Gruppe.
+    Einmaliger Download, ca. 1,2 GB, läuft danach ohne Internet. Die Analyse dauert damit länger.
     ${st.fehler ? `<br><span class="danger-text">${esc(st.fehler)}</span>` : ''}
-    <div style="margin-top:8px"><button class="small" onclick="sprachLaden('${target}')">Spracherkennung herunterladen</button></div></div>`;
+    <div style="margin-top:8px"><button class="small" onclick="sprachLaden('${target}')">KI-Modelle herunterladen</button></div></div>`;
 }
 async function sprachLaden(target) {
   try { await api('/api/sprachmodell', {method: 'POST'}); } catch (e) { return alert(e.message); }
   sprachBox(target);
-}
-function searchLyrics() {
-  const q = `${$('#f_titel').value} ${$('#f_autoren').value} Songtext`.trim();
-  extern('https://www.google.com/search?q=' + encodeURIComponent(q));
 }
 function extern(url) { if (BRIDGE) BRIDGE.extern(url); else window.open(url, '_blank'); }
 async function oeffnen(pfad) { try { await api('/api/oeffnen', {method: 'POST', body: {pfad}}); } catch (e) { alert(e.message); } }
@@ -83,25 +187,12 @@ async function ordnerWaehlen(id, titel) {
   if (!BRIDGE) return;
   BRIDGE.ordnerWaehlen(titel, $('#' + id).value, d => { if (d) $('#' + id).value = d; });
 }
-async function createProject() {
-  const f = $('#f_audio').files[0];
-  if (!f) return alert('Bitte eine Audio-Datei auswählen.');
-  const fd = new FormData();
-  fd.append('audio', f); fd.append('titel', $('#f_titel').value); fd.append('autoren', $('#f_autoren').value); fd.append('text', $('#f_text').value);
-  app.innerHTML = '<div class="card"><h2>Hochladen …</h2></div>';
-  const r = await api('/api/projekte', {method: 'POST', body: fd});
-  openProject(r.id);
-}
-async function importMscz() {
-  const f = $('#f_mscz').files[0]; if (!f) return;
-  const fd = new FormData(); fd.append('datei', f);
-  const r = await api('/api/projekte/import', {method: 'POST', body: fd});
-  openProject(r.id);
-}
 async function delProject(id) { if (confirm('Song wirklich löschen?')) { await api(pu(id), {method: 'DELETE'}); showHome(); } }
 
 // ------------------------------------------------------------- Projekt ----
+let LAST_ID = null;
 async function openProject(id) {
+  if (id !== LAST_ID) { STEP = 0; OUT_SEL = null; LAST_ID = id; }
   const d = await api(pu(id));
   if (d.job && d.job.status === 'analyse') { renderProgress(d); setTimeout(() => openProject(id), 1500); return; }
   if (!d.song) { app.innerHTML = `<div class="card"><h2>Fehler bei der Analyse</h2><p>${esc(d.meta.fehler || d.job?.fehler || '')}</p></div>`; return; }
@@ -113,21 +204,6 @@ function renderProgress(d) {
   app.innerHTML = `<div class="card"><h1>${esc(d.meta.titel)}</h1><p>${esc(j.schritt || 'Analyse')} …</p>
    <div class="progress"><div style="width:${Math.round((j.fortschritt || 0) * 100)}%"></div></div>
    <p class="muted small">Du kannst das Fenster offen lassen – das Ergebnis erscheint automatisch.</p></div>`;
-}
-function render() {
-  const s = P.song, rep = (P.meta.bericht || {});
-  app.innerHTML = `
-   <div class="spread"><div><h1>${esc(s.title)}</h1>
-    <div><span class="pill">Original: ${esc(s.key)}</span><span class="pill">Zieltonart: ${esc(s.target_key)} (${s.transpose > 0 ? '+' : ''}${s.transpose})</span>
-     <span class="pill">Tempo ${Math.round(s.tempo)}</span>${rep.takt ? `<span class="pill">${rep.takt}-Takt</span>` : ''}
-     ${rep.zeilen ? `<span class="pill">${esc(rep.zeilen)}</span>` : ''}
-     ${rep.spracherkennung === 'nicht eingerichtet' ? `<span class="pill" title="Unter Einstellungen herunterladen, danach „Neu analysieren“">ohne Spracherkennung</span>` : ''}</div></div>
-    <div class="row"><button onclick="openPdf('chordsheet')">Chord-Sheet ↗</button><button onclick="openPdf('chortext')">Chortext ↗</button>
-     <button onclick="openPdf('gitarre')">Gitarre ↗</button><button onclick="oeffnen(P.pfad)" title="${esc(P.pfad)}">📁 Projektordner</button></div></div>
-   <div class="tabs">${[['song', '1 · Song & Text'], ['ablauf', '2 · Ablauf'], ['besetzung', '3 · Besetzung'], ['stimmen', '4 · Stimmen & Tonart'], ['erzeugen', '5 · Erzeugen']]
-      .map(([k, t]) => `<button class="${TAB === k ? 'active' : ''}" onclick="TAB='${k}';render()">${t}</button>`).join('')}</div>
-   <div id="tab"></div>`;
-  ({song: tabSong, ablauf: tabAblauf, besetzung: tabBesetzung, stimmen: tabStimmen, erzeugen: tabErzeugen})[TAB]();
 }
 async function openPdf(art) {
   if (!BRIDGE) return window.open(`${pu(P.id)}/vorschau/${art}?t=${Date.now()}`, '_blank');
@@ -147,162 +223,263 @@ function play(t0, t1) {
 }
 
 // ---- 1: Song & Text
-function tabSong() {
-  const s = P.song;
+function fmtTime(t) { t = Math.max(0, t); return Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0'); }
+// ------------------------------------------------------------- Projekt (Assistent) ----
+let STEP = 0;
+const STEPS = [['pruefen', 'Anhören & prüfen'], ['ablauf', 'Ablauf'], ['tonart', 'Tonart'], ['band', 'Band & Chor'], ['erzeugen', 'Erzeugen']];
+const STEP_COLLECT = [collectPruefen, () => {}, () => {}, () => {}, () => {}];
+let SNAP = '';   // Stand beim Laden – zum Erkennen ungespeicherter Änderungen
+function render() {
+  const s = P.song, rep = (P.meta.bericht || {});
+  SNAP = JSON.stringify({sections: s.sections, form: s.form, title: s.title, subtitle: s.subtitle, version: s.version, authors: s.authors});
+  app.innerHTML = `
+   <div class="spread"><div><h1>${esc(s.title)}</h1>
+    <div><span class="pill">Tonart ${esc(s.key)}${s.transpose ? ` → <b>${esc(s.target_key)}</b>` : ''}</span><span class="pill">Tempo ${Math.round(s.tempo)}</span>
+     ${rep.takt ? `<span class="pill">${rep.takt}-Takt</span>` : ''}
+     ${rep.spracherkennung === 'nicht eingerichtet' ? `<span class="pill warn" title="Unter Einstellungen die KI-Modelle herunterladen, danach neu analysieren">ohne Spracherkennung</span>` : ''}</div></div>
+    <div class="row">${MEHR ? `<button class="small" onclick="openPdf('chordsheet')">Chord-Sheet ↗</button><button class="small" onclick="openPdf('chortext')">Chortext ↗</button>
+     <button class="small" onclick="openPdf('gitarre')">Gitarre ↗</button>` : ''}<button class="small" onclick="oeffnen(P.pfad)" title="${esc(P.pfad)}">📁 Projektordner</button></div></div>
+   ${stepper(STEPS, STEP, 'goStep')}
+   <div id="tab"></div>
+   ${navBar(STEP, STEPS.length, 'goStep')}`;
+  [stepPruefen, stepAblauf, stepTonart, stepBand, stepErzeugen][STEP]();
+}
+// Weiterklicken speichert automatisch
+async function goStep(i) {
+  STEP_COLLECT[STEP]();
+  const s = P.song, now = JSON.stringify({sections: s.sections, form: s.form, title: s.title, subtitle: s.subtitle, version: s.version, authors: s.authors});
+  if (now !== SNAP) {
+    const secs = s.sections.map(x => ({id: x.id, label: x.label, kind: x.kind, bar_chords: x.bar_chords, text: x.instrumental ? undefined : x.text}));
+    try { await saveSong({sections: secs, form: s.form, title: s.title, subtitle: s.subtitle, version: s.version, authors: s.authors}, false); }
+    catch (e) { return alert('Speichern hat nicht geklappt: ' + e.message); }
+  }
+  STEP = i; render(); window.scrollTo(0, 0);
+}
+
+// ---- 1: Anhören & prüfen
+function stepPruefen() {
+  const s = P.song, rep = P.meta.bericht || {};
+  const warn = [rep.warnung, rep.ablauf_fehlt ? 'Diese Teile aus dem gewählten Ablauf wurden in der Aufnahme nicht gefunden: ' + rep.ablauf_fehlt.join(', ') : ''].filter(Boolean);
   $('#tab').innerHTML = `
-  <div class="card"><div class="grid3">
+  ${warn.map(w => `<div class="hint">${esc(w)}</div>`).join('')}
+  <p class="muted">Hör in die Teile rein und prüfe den Text. ▶ spielt den Teil im Original.${MEHR ? ' Akkorde: ein Feld = ein Takt (<b>G G/F#</b> = Zählzeit 1 und 3, <b>G . Em7 D</b> = je Schlag, <b>%</b> = kein Wechsel).' : ''}</p>
+  ${MEHR ? `<div class="card"><div class="grid3">
     <div><label>Titel</label><input type="text" id="s_title" value="${esc(s.title)}"></div>
     <div><label>Untertitel</label><input type="text" id="s_sub" value="${esc(s.subtitle)}"></div>
     <div><label>Version (Chorblatt)</label><input type="text" id="s_ver" value="${esc(s.version)}"></div></div>
-    <label>Autoren (eine Zeile pro Person/Gruppe)</label><textarea id="s_auth" style="min-height:52px">${esc(s.authors)}</textarea>
-    <div class="row" style="margin-top:10px"><button class="primary" onclick="saveHead()">Speichern</button></div></div>
-  <div class="hint">Prüfe pro Teil die Akkorde (ein Feld = ein Takt; <b>G G/F#</b> = Zählzeit 1 und 3, <b>G . Em7 D</b> = je Schlag, <b>%</b> = kein Wechsel)
-   und den Text (eine Zeile = eine Zeile im Chord-Sheet). Mit ▶ hörst du den Teil im Original.</div>
-  ${s.sections.map((sec, i) => `
+    <label>Autoren (eine Zeile pro Person/Gruppe)</label><textarea id="s_auth" style="min-height:52px">${esc(s.authors)}</textarea></div>` : ''}
+  ${s.sections.map(sec => `
    <div class="card sec ${sec.instrumental ? 'instr' : ''}" data-id="${sec.id}">
     <div class="spread"><div class="row">
-      <input type="text" class="sl" value="${esc(sec.label)}" style="width:170px;font-weight:600">
-      <select class="sk">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${k === sec.kind ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      ${MEHR ? `<input type="text" class="sl" value="${esc(sec.label)}" style="width:170px;font-weight:600">
+      <select class="sk" style="width:auto">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${k === sec.kind ? 'selected' : ''}>${v}</option>`).join('')}</select>`
+      : `<b>${esc(sec.label)}</b>`}
       <span class="muted small">${sec.n_bars} Takte${sec.audio_start != null ? ' · ab ' + fmtTime(sec.audio_start) : ''}</span></div>
      <div class="row">${sec.audio_start != null ? `<button class="small" onclick="play(${sec.audio_start},${sec.audio_end || 0})">▶ anhören</button>` : ''}
-      <button class="small" onclick="copySection('${sec.id}')">Teil kopieren</button></div></div>
-    <div class="bars">${sec.bar_chords.map((c, k) => `<div><div class="barno">Takt ${k + 1}</div><input type="text" class="bc" value="${esc(c)}"></div>`).join('')}</div>
-    ${sec.instrumental ? '' : `<label>Text dieses Teils</label><textarea class="st">${esc(sec.text)}</textarea>`}
+      ${MEHR ? `<button class="small" onclick="copySection('${sec.id}')">Teil kopieren</button>` : ''}</div></div>
+    ${MEHR ? `<div class="bars">${sec.bar_chords.map((c, k) => `<div><div class="barno">Takt ${k + 1}</div><input type="text" class="bc" value="${esc(c)}"></div>`).join('')}</div>`
+      : `<div class="chords small">${esc(sec.bar_chords.join(' | '))}</div>`}
+    ${sec.instrumental ? '' : `<textarea class="st" rows="${Math.max(2, sec.text.split('\n').length)}">${esc(sec.text)}</textarea>`}
    </div>`).join('')}
-  <div class="row"><button class="primary" onclick="saveSections()">Akkorde & Text speichern</button></div>
-  <div class="card" style="margin-top:20px"><h2 style="margin-top:0">Ganzen Liedtext neu zuordnen</h2>
-   <p class="muted small">Wenn der Text noch fehlt oder vieles falsch zugeordnet ist: Text hier (in Sing-Reihenfolge) einfügen und neu analysieren.
-   Die Spurtrennung ist schon erledigt, das geht jetzt schnell.</p>
-   <textarea id="s_full" class="lyrics">${esc(P.liedtext)}</textarea>
-   <label>Notenwerte (Tempo der Notation)</label>
-   <select id="s_tf">${[[1, 'wie erkannt'], [2, 'doppeltes Tempo (weniger Sechzehntel)'], [0.5, 'halbes Tempo']].map(([v, t]) =>
-     `<option value="${v}" ${(+(P.meta.tempo_faktor || 1)) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
-   <p class="muted small">Viele Lieder lassen sich in zwei Tempi notieren (z.&nbsp;B. 65 oder 130 bpm). Wenn das Leadsheet zu viele Sechzehntel hat, „doppeltes Tempo“ wählen.</p>
-   <div class="row"><button onclick="reanalyse()">Neu analysieren</button></div></div>`;
+  ${MEHR ? `<div class="card"><h2 style="margin-top:0">Neu analysieren</h2>
+   <p class="muted small">Wenn der Text fehlt oder vieles falsch zugeordnet ist, oder um Melodie/Notenwerte anders zu notieren.
+   Die Spurtrennung ist schon erledigt, das geht jetzt schneller.</p>
+   <label>Liedtext (in Sing-Reihenfolge)</label><textarea id="s_full" class="lyrics">${esc(P.liedtext)}</textarea>
+   <h3>Melodie im Leadsheet</h3>${choice('r_mel', P.meta.melodie || 'erste', MELODIE)}
+   <h3>Notenwerte</h3>${choice('r_tf', +(P.meta.tempo_faktor || 1), TEMPO)}
+   <div class="row" style="margin-top:12px"><button class="primary" onclick="reanalyse()">Neu analysieren</button>
+    <span class="muted small">Ablauf, Tonart und Besetzung bleiben erhalten, soweit möglich.</span></div></div>` : ''}
+  ${mehrBtn('render')}`;
 }
-function fmtTime(t) { t = Math.max(0, t); return Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0'); }
-async function saveHead() {
-  await saveSong({title: $('#s_title').value, subtitle: $('#s_sub').value, version: $('#s_ver').value, authors: $('#s_auth').value});
+function collectPruefen() {
+  const s = P.song;
+  if ($('#s_title')) Object.assign(s, {title: $('#s_title').value, subtitle: $('#s_sub').value, version: $('#s_ver').value, authors: $('#s_auth').value});
+  const old = Object.fromEntries(s.sections.map(x => [x.id, x.label]));
+  document.querySelectorAll('.sec').forEach(el => {
+    const sec = s.sections.find(x => x.id === el.dataset.id); if (!sec) return;
+    if ($('.sl', el)) { sec.label = $('.sl', el).value; sec.kind = $('.sk', el).value; }
+    if ($('.bc', el)) sec.bar_chords = [...el.querySelectorAll('.bc')].map(i => i.value);
+    if ($('.st', el)) sec.text = $('.st', el).value;
+  });
+  // Abschnittsnamen auch im Ablauf nachziehen, wenn dort der alte Name stand
+  s.form.forEach(f => { const sec = s.sections.find(x => x.id === f.section); if (sec && (f.label === old[f.section] || !f.label)) f.label = sec.label; });
 }
-async function saveSections() {
-  const secs = [...document.querySelectorAll('.sec')].map(el => ({
-    id: el.dataset.id, label: $('.sl', el).value, kind: $('.sk', el).value,
-    bar_chords: [...el.querySelectorAll('.bc')].map(i => i.value), text: $('.st', el) ? $('.st', el).value : undefined}));
-  // Abschnittsnamen auch im Ablauf aktualisieren, wenn dort der alte Name stand
-  const old = Object.fromEntries(P.song.sections.map(s => [s.id, s.label]));
-  const form = P.song.form.map(f => { const n = secs.find(x => x.id === f.section); return n && (f.label === old[f.section] || !f.label) ? {...f, label: n.label} : f; });
-  await saveSong({sections: secs, form});
-}
-async function copySection(id) { P.song = await api(`${pu(P.id)}/abschnitt-kopieren/${id}`, {method: 'POST'}); render(); }
+async function copySection(id) { collectPruefen(); await goStep(STEP); P.song = await api(`${pu(P.id)}/abschnitt-kopieren/${id}`, {method: 'POST'}); render(); }
 async function reanalyse() {
   await api(`${pu(P.id)}/neu-analysieren`, {method: 'POST', body: {text: $('#s_full').value, titel: P.song.title, autoren: P.song.authors,
-    tempo_faktor: +($('#s_tf') ? $('#s_tf').value : 1)}});
+    tempo_faktor: +(radio('r_tf') || 1), melodie: radio('r_mel') || 'erste'}});
   openProject(P.id);
 }
 
 // ---- 2: Ablauf
-function tabAblauf() {
-  const s = P.song, opts = s.sections.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('');
+function stepAblauf() {
+  const s = P.song, q = (s.notes || {}).ablauf_quelle || P.meta.ablauf || 'audio';
+  const opts = s.sections.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('');
+  const hasText = ((P.meta.bericht || {}).textbloecke || []).length > 0;
   $('#tab').innerHTML = `
-  <div class="hint">So spielt <b>ihr</b> den Song. Teile verschieben, doppeln, wiederholen oder entfernen. „Audio aus“ bestimmt, welcher Teil des Originals
-   im Übe-Audio erklingt – z. B. Chorus 3 mit dem ruhigen Audio von Chorus 1 („wie am Anfang“).</div>
-  <div class="card"><table><tr><th>#</th><th>Bezeichnung</th><th>Teil</th><th>Wdh.</th><th>Audio aus</th><th></th></tr>
+  <div class="card"><h3>Woher kommt der Ablauf?</h3>
+   <div class="choices">${ABLAUF.map(([v, t, d]) => `<button class="choice ${v === q ? 'on' : ''}" ${v === 'text' && !hasText ? 'disabled title="Kein Liedtext eingefügt"' : ''}
+     onclick="ablaufQuelle('${v}')"><b>${t}</b><span>${d}</span></button>`).join('')}</div>
+   ${q === 'leadsheet' || MEHR ? `<div class="row" style="margin-top:8px"><span class="muted small">${P.leadsheet ? 'Leadsheet ist hinterlegt.' : 'Noch kein Leadsheet hinterlegt.'}</span>
+     <input type="file" id="f_ls2" accept=".mscz,.mscx" style="width:auto"><button class="small" onclick="leadsheetHochladen()">${P.leadsheet ? 'Anderes Leadsheet nehmen' : 'Leadsheet hochladen'}</button></div>` : ''}
+   <div id="abl_msg"></div></div>
+  <div class="card"><h3>So spielt ihr den Song</h3>
+   <p class="muted small" style="margin-top:0">Teile mit ↑ ↓ verschieben oder mit ✕ entfernen.${MEHR ? ' „Audio aus“ bestimmt, welcher Teil des Originals im Übe-Audio erklingt – z. B. der letzte Refrain mit dem ruhigen Audio vom ersten.' : ''}</p>
+   <table>${MEHR ? '<tr><th>#</th><th>Bezeichnung</th><th>Teil</th><th>Wdh.</th><th>Audio aus</th><th></th></tr>' : ''}
    ${s.form.map((f, i) => `<tr>
-     <td>${i + 1}</td>
-     <td><input type="text" value="${esc(f.label)}" onchange="P.song.form[${i}].label=this.value"></td>
+     <td class="muted" style="width:30px">${i + 1}</td>
+     ${MEHR ? `<td><input type="text" value="${esc(f.label)}" onchange="P.song.form[${i}].label=this.value"></td>
      <td><select onchange="P.song.form[${i}].section=this.value">${opts.replace(`value="${f.section}"`, `value="${f.section}" selected`)}</select></td>
      <td style="width:70px"><input type="number" min="1" max="8" value="${f.repeat}" onchange="P.song.form[${i}].repeat=+this.value"></td>
-     <td><select onchange="P.song.form[${i}].audio_from=this.value||null"><option value="">(gleicher Teil)</option>${opts.replace(`value="${f.audio_from}"`, `value="${f.audio_from}" selected`)}</select></td>
-     <td class="row"><button class="small" onclick="moveForm(${i},-1)">↑</button><button class="small" onclick="moveForm(${i},1)">↓</button>
-       <button class="small" onclick="dupForm(${i})">doppeln</button><button class="small danger" onclick="delForm(${i})">✕</button></td></tr>`).join('')}
-  </table>
-  <div class="row" style="margin-top:12px"><select id="addsec">${opts}</select><button onclick="addForm()">Teil anhängen</button>
-   <button class="primary" onclick="saveSong({form:P.song.form})">Ablauf speichern</button>
-   <button onclick="resetForm()">Original-Ablauf</button></div></div>`;
+     <td><select onchange="P.song.form[${i}].audio_from=this.value||null"><option value="">(gleicher Teil)</option>${opts.replace(`value="${f.audio_from}"`, `value="${f.audio_from}" selected`)}</select></td>`
+     : `<td><b>${esc(f.label)}</b>${f.repeat > 1 ? ` <span class="muted">(${f.repeat}×)</span>` : ''}${f.note ? ` <span class="muted small">${esc(f.note)}</span>` : ''}</td>`}
+     <td><div class="row" style="justify-content:flex-end;flex-wrap:nowrap"><button class="small" onclick="moveForm(${i},-1)">↑</button><button class="small" onclick="moveForm(${i},1)">↓</button>
+       ${MEHR ? `<button class="small" onclick="dupForm(${i})">doppeln</button>` : ''}<button class="small danger" onclick="delForm(${i})">✕</button></div></td></tr>`).join('')}
+   </table>
+   <div class="row" style="margin-top:12px"><select id="addsec" style="width:auto">${opts}</select><button onclick="addForm()">Teil anhängen</button></div></div>
+  ${mehrBtn('render')}`;
 }
-function moveForm(i, d) { const f = P.song.form, j = i + d; if (j < 0 || j >= f.length) return; [f[i], f[j]] = [f[j], f[i]]; tabAblauf(); }
-function dupForm(i) { P.song.form.splice(i + 1, 0, JSON.parse(JSON.stringify(P.song.form[i]))); tabAblauf(); }
-function delForm(i) { P.song.form.splice(i, 1); tabAblauf(); }
-function addForm() { const id = $('#addsec').value, sec = P.song.sections.find(s => s.id === id);
-  P.song.form.push({section: id, label: sec.label, add: [], remove: [], note: '', singers: [], congregation: true, choir: 'sing', choir_cue: '', choir_dyn: '', strings: {}, repeat: 1, audio_from: null}); tabAblauf(); }
-function resetForm() { P.song.form = P.song.sections.map(s => ({section: s.id, label: s.label, add: [], remove: [], note: '', singers: [], congregation: true,
-  choir: 'sing', choir_cue: '', choir_dyn: '', strings: {}, repeat: 1, audio_from: null})); tabAblauf(); }
+async function ablaufQuelle(q) {
+  if (q === 'leadsheet' && !P.leadsheet) { P.song.notes = {...(P.song.notes || {}), ablauf_quelle: 'leadsheet'}; stepAblauf();
+    $('#abl_msg').innerHTML = '<p class="small">Bitte das Leadsheet (.mscz) auswählen und hochladen.</p>'; return; }
+  try { const r = await api(`${pu(P.id)}/ablauf`, {method: 'POST', body: {quelle: q}}); ablaufFertig(r); } catch (e) { alert(e.message); }
+}
+async function leadsheetHochladen() {
+  const f = $('#f_ls2').files[0]; if (!f) return alert('Bitte zuerst die Leadsheet-Datei (.mscz) auswählen.');
+  const fd = new FormData(); fd.append('datei', f);
+  try { const r = await api(`${pu(P.id)}/leadsheet`, {method: 'POST', body: fd}); P.leadsheet = true; ablaufFertig(r); } catch (e) { alert(e.message); }
+}
+function ablaufFertig(r) {
+  P.song = r.song; render();
+  if (r.fehlt && r.fehlt.length) $('#abl_msg').innerHTML = `<div class="hint">Nicht in der Aufnahme gefunden und daher weggelassen: ${r.fehlt.map(esc).join(', ')}</div>`;
+}
+function moveForm(i, d) { const f = P.song.form, j = i + d; if (j < 0 || j >= f.length) return; [f[i], f[j]] = [f[j], f[i]]; stepAblauf(); }
+function dupForm(i) { P.song.form.splice(i + 1, 0, JSON.parse(JSON.stringify(P.song.form[i]))); stepAblauf(); }
+function delForm(i) { P.song.form.splice(i, 1); stepAblauf(); }
+function newItem(sec) { return {section: sec.id, label: sec.label, add: [], remove: [], note: '', singers: [], congregation: true, choir: 'sing', choir_cue: '', choir_dyn: '', strings: {}, repeat: 1, audio_from: null}; }
+function addForm() { const id = $('#addsec').value; P.song.form.push(newItem(P.song.sections.find(s => s.id === id))); stepAblauf(); }
 
-// ---- 3: Besetzung
-function lineupStates() {
-  let st = new Set(); return P.song.form.map(f => { f.add.forEach(a => st.add(a)); f.remove.forEach(r => st.delete(r)); return new Set(st); });
-}
-function tabBesetzung() {
-  const insts = [...new Set([...(SETTINGS.besetzung || []), ...P.song.form.flatMap(f => [...f.add, ...f.remove])])];
-  const states = lineupStates(), players = (SETTINGS.spieler || []);
-  $('#tab').innerHTML = `
-  <div class="hint">Haken = Instrument spielt in diesem Teil. Daraus entstehen automatisch die <span class="plus">+grünen</span> und
-   <span class="minus">−roten</span> Angaben im Chord-Sheet. Darunter: Chor-Anweisungen (Farbcode im Chorblatt) und Streicherrollen.</div>
-  <div class="card" style="overflow:auto"><table class="lineup"><tr><th>Teil</th>${insts.map(i => `<th class="c">${esc(i)}</th>`).join('')}<th>Hinweis</th></tr>
-   ${P.song.form.map((f, r) => `<tr><td><b>${esc(f.label)}</b><div class="small">${f.add.map(a => `<span class="plus">+${esc(a)}</span>`).join(' ')} ${f.remove.map(a => `<span class="minus">-${esc(a)}</span>`).join(' ')}</div></td>
-     ${insts.map(i => `<td class="c"><input type="checkbox" data-r="${r}" data-i="${esc(i)}" ${states[r].has(i) ? 'checked' : ''} onchange="lineupChange()"></td>`).join('')}
-     <td><input type="text" value="${esc(f.note)}" placeholder="z. B. LEGit-Solo" onchange="P.song.form[${r}].note=this.value"></td></tr>`).join('')}
-  </table><div class="row" style="margin-top:8px"><input type="text" id="newinst" placeholder="weiteres Instrument (Kürzel)" style="width:220px">
-   <button onclick="SETTINGS.besetzung.push($('#newinst').value);tabBesetzung()">hinzufügen</button></div></div>
-  <div class="card"><h3>Chor</h3><table><tr><th>Teil</th><th>Chor</th><th>Ausdruck (erscheint auf dem Chorblatt)</th><th>Farbe</th></tr>
-   ${P.song.form.map((f, r) => `<tr><td>${esc(f.label)}</td>
-     <td><select onchange="P.song.form[${r}].choir=this.value"><option value="sing">singt</option><option value="solo" ${f.choir === 'solo' ? 'selected' : ''}>nicht mitsingen (Solo)</option><option value="tacet" ${f.choir === 'tacet' ? 'selected' : ''}>Pause</option></select></td>
-     <td><input type="text" value="${esc(f.choir_cue)}" placeholder="z. B. etwas lauter (dankbar)" onchange="P.song.form[${r}].choir_cue=this.value"></td>
-     <td><select onchange="P.song.form[${r}].choir_dyn=this.value"><option value="">automatisch</option><option value="soft" ${f.choir_dyn === 'soft' ? 'selected' : ''}>rot (leiser)</option><option value="loud" ${f.choir_dyn === 'loud' ? 'selected' : ''}>grün (lauter)</option></select></td></tr>`).join('')}
-  </table></div>
-  <div class="card"><h3>Streicher</h3><p class="muted small">„automatisch“ folgt deinem Stil: erst später einsetzen, im Chorus Liegetöne bzw. Gegenstimme, Bridge als Steigerung, ruhiger Schluss tacet.
-   Spieler und Niveau stellst du unter „Erzeugen“ bzw. in den Einstellungen ein.</p>
-   <table><tr><th>Teil</th>${players.map(p => `<th>${esc(p.name)}</th>`).join('')}</tr>
-   ${P.song.form.map((f, r) => `<tr><td>${esc(f.label)}</td>${players.map(p => `<td><select onchange="P.song.form[${r}].strings['${esc(p.name)}']=this.value">
-      ${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${(f.strings[p.name] || 'auto') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>`).join('')}</tr>`).join('')}
-   </table></div>
-  <div class="row"><button class="primary" onclick="saveSong({form:P.song.form})">Besetzung speichern</button></div>`;
-}
-function lineupChange() {
-  const n = P.song.form.length, sets = [...Array(n)].map(() => new Set());
-  document.querySelectorAll('.lineup input[type=checkbox]').forEach(cb => { if (cb.checked) sets[+cb.dataset.r].add(cb.dataset.i); });
-  let prev = new Set();
-  P.song.form.forEach((f, r) => { f.add = [...sets[r]].filter(x => !prev.has(x)); f.remove = [...prev].filter(x => !sets[r].has(x)); prev = sets[r]; });
-  tabBesetzung();
-}
-
-// ---- 4: Stimmen & Tonart
-async function tabStimmen() {
+// ---- 3: Tonart
+async function stepTonart() {
   const [profs, keys] = await Promise.all([api('/api/stimmprofile'), api(`${pu(P.id)}/tonart`)]);
   window.PROFS = profs;
   const singers = profs.filter(p => !p.is_congregation), u = keys.umfang || {};
+  const best = keys.vorschlaege.slice(0, MEHR ? 6 : 3);
   $('#tab').innerHTML = `
-  <div class="card" id="spitzen"><h3>Spitzentöne prüfen</h3><p class="muted small">Lädt …</p></div>
-  <div class="grid2">
-   <div class="card"><h3>Tonumfang der Melodie (in ${esc(P.song.target_key)})</h3>
+  <div class="card"><h3>In welcher Tonart singt ihr?</h3>
+   <p class="muted small" style="margin-top:0">Original: <b>${esc(P.song.key)}</b>${u.tiefster ? ` · Melodie von ${esc(u.tiefster)} bis ${esc(u.hoechster)} (in ${esc(P.song.target_key)})` : ''}.
+   Die Vorschläge passen zu euren Stimmprofilen und zur Gemeinde.</p>
+   ${keys.tauschen.length ? `<div class="hint" style="margin-bottom:8px">${keys.tauschen.map(esc).join('<br>')}</div>` : ''}
+   ${best.map((k, i) => `<div class="keyopt ${i === 0 ? 'best' : ''}">
+      <div><b>${esc(k.tonart_de)}</b> <span class="muted small">(${k.shift > 0 ? '+' : ''}${k.shift} Halbtöne · ${esc(k.gitarre)})${i === 0 ? ' · Empfehlung' : ''}</span>
+       <div class="small">${k.hinweise.length ? k.hinweise.map(esc).join('<br>') : '<span class="plus">passt für alle</span>'}</div></div>
+      <button class="${k.shift === P.song.transpose ? 'primary' : ''}" onclick="saveSong({transpose:${k.shift}})">${k.shift === P.song.transpose ? '✓ gewählt' : 'übernehmen'}</button></div>`).join('')}
+   ${MEHR ? `<div class="row" style="margin-top:10px"><label style="margin:0">Von Hand:</label>
+     <select style="width:auto" onchange="saveSong({transpose:+this.value})">${[...Array(13)].map((_, i) => i - 6).map(v => `<option value="${v}" ${v === P.song.transpose ? 'selected' : ''}>${v > 0 ? '+' : ''}${v}</option>`).join('')}</select></div>` : ''}
+  </div>
+  ${MEHR ? `<div class="card" id="spitzen"><h3>Spitzentöne prüfen</h3><p class="muted small">Lädt …</p></div>
+  <div class="card"><h3>Tonumfang der Melodie (in ${esc(P.song.target_key)})</h3>
     ${u.tiefster ? `<p><b>${esc(u.tiefster)} – ${esc(u.hoechster)}</b> (${u.halbtoene} Halbtöne), Hauptlage <b>${esc(u.hauptlage)}</b></p>
     <table><tr><th>Höchste Töne</th><th>wie oft</th><th>Schläge</th><th>längster</th><th>wo</th></tr>
      ${u.hoechste.map(r => `<tr><td><b>${esc(r.ton)}</b></td><td>${r.anzahl}×</td><td>${r.schlaege}</td><td>${r.laengster}</td><td class="small">${esc(r.teile.join(', '))}</td></tr>`).join('')}
      <tr><th>Tiefste Töne</th><th></th><th></th><th></th><th></th></tr>
      ${u.tiefste.map(r => `<tr><td><b>${esc(r.ton)}</b></td><td>${r.anzahl}×</td><td>${r.schlaege}</td><td>${r.laengster}</td><td class="small">${esc(r.teile.join(', '))}</td></tr>`).join('')}
     </table>` : '<p class="muted">Keine gesungenen Noten gefunden.</p>'}</div>
-   <div class="card"><h3>Tonart-Vorschläge</h3>
-    ${keys.tauschen.length ? `<div class="hint" style="margin-bottom:8px">${keys.tauschen.map(esc).join('<br>')}</div>` : ''}
-    ${keys.vorschlaege.slice(0, 5).map((k, i) => `<div class="keyopt ${i === 0 ? 'best' : ''}" style="padding:8px;border-bottom:1px solid var(--line)">
-      <div><b>${esc(k.tonart_de)}</b> <span class="muted small">(${k.shift > 0 ? '+' : ''}${k.shift} Halbtöne · ${esc(k.gitarre)})</span>
-       <div class="small">${k.hinweise.length ? k.hinweise.map(esc).join('<br>') : '<span class="plus">passt für alle</span>'}</div></div>
-      <button class="small ${k.shift === P.song.transpose ? 'primary' : ''}" onclick="saveSong({transpose:${k.shift}})">${k.shift === P.song.transpose ? 'gewählt' : 'übernehmen'}</button></div>`).join('')}
-    <div class="row" style="margin-top:10px"><label style="margin:0">Von Hand:</label>
-     <select onchange="saveSong({transpose:+this.value})">${[...Array(13)].map((_, i) => i - 6).map(v => `<option value="${v}" ${v === P.song.transpose ? 'selected' : ''}>${v > 0 ? '+' : ''}${v}</option>`).join('')}</select></div>
-   </div></div>
   <div class="card"><h3>Wer singt was?</h3><table><tr><th>Teil</th>${singers.map(p => `<th>${esc(p.name)}</th>`).join('')}<th>Gemeinde</th></tr>
    ${P.song.form.map((f, r) => `<tr><td>${esc(f.label)}</td>${singers.map(p => `<td><input type="checkbox" ${f.singers.includes(p.id) ? 'checked' : ''}
       onchange="toggleSinger(${r},'${p.id}',this.checked)"></td>`).join('')}<td><input type="checkbox" ${f.congregation ? 'checked' : ''} onchange="P.song.form[${r}].congregation=this.checked"></td></tr>`).join('')}
-   </table><div class="row" style="margin-top:10px"><button class="primary" onclick="saveSong({form:P.song.form})">Speichern & neu bewerten</button></div></div>
+   </table><div class="row" style="margin-top:10px"><button class="primary" onclick="saveSong({form:P.song.form})">Neu bewerten</button></div></div>
   <div class="card"><h3>Stimmprofile</h3><p class="muted small">Töne so, wie sie im Leadsheet stehen (deutsche Schreibweise: g, a, h, c', cis'', …). Männer singen das eine Oktave tiefer – das ist egal.</p>
    <table id="proftab"><tr><th>Name</th><th>bequem von</th><th>bis</th><th>geht noch runter bis</th><th>geht noch hoch bis</th><th>wird dünn ab</th><th></th></tr>
    ${profs.map((p, i) => `<tr data-i="${i}"><td><input type="text" class="pn" value="${esc(p.name)}" ${p.is_congregation ? 'readonly' : ''}></td>
      ${['comfort_low', 'comfort_high', 'limit_low', 'limit_high', 'weak_low'].map(k => `<td><input type="text" class="p_${k}" value="${esc(p[k])}"></td>`).join('')}
      <td>${p.is_congregation ? '' : `<button class="small danger" onclick="PROFS.splice(${i},1);saveProfiles(true)">✕</button>`}</td></tr>`).join('')}
    </table><div class="row" style="margin-top:10px"><button onclick="PROFS.push({id:'',name:'Neue Person',comfort_low:'a',comfort_high:\"c''\",limit_low:'g',limit_high:\"d''\",weak_low:'',note:'',is_congregation:false});saveProfiles(false)">Person hinzufügen</button>
-   <button class="primary" onclick="saveProfiles(true)">Profile speichern</button></div></div>`;
-  loadExtremes().catch(e => { $('#spitzen').innerHTML = '<h3>Spitzentöne prüfen</h3><p class="muted small">' + esc(e.message) + '</p>'; });
+   <button class="primary" onclick="saveProfiles(true)">Profile speichern</button></div></div>` : ''}
+  ${mehrBtn('render')}`;
+  if (MEHR) loadExtremes().catch(e => { $('#spitzen').innerHTML = '<h3>Spitzentöne prüfen</h3><p class="muted small">' + esc(e.message) + '</p>'; });
 }
+
+// ---- 4: Band & Chor
+function lineupStates() {
+  let st = new Set(); return P.song.form.map(f => { f.add.forEach(a => st.add(a)); f.remove.forEach(r => st.delete(r)); return new Set(st); });
+}
+function stepBand() {
+  const insts = [...new Set([...(SETTINGS.besetzung || []), ...P.song.form.flatMap(f => [...f.add, ...f.remove])])];
+  const states = lineupStates(), players = (SETTINGS.spieler || []);
+  $('#tab').innerHTML = `
+  <p class="muted">Haken = Instrument spielt in diesem Teil. Daraus entstehen die <span class="plus">+grünen</span> und <span class="minus">−roten</span> Einsätze im Chord-Sheet.</p>
+  <div class="card" style="overflow:auto"><table class="lineup"><tr><th>Teil</th>${insts.map(i => `<th class="c">${esc(i)}</th>`).join('')}${MEHR ? '<th>Hinweis</th>' : ''}</tr>
+   ${P.song.form.map((f, r) => `<tr><td><b>${esc(f.label)}</b><div class="small">${f.add.map(a => `<span class="plus">+${esc(a)}</span>`).join(' ')} ${f.remove.map(a => `<span class="minus">-${esc(a)}</span>`).join(' ')}</div></td>
+     ${insts.map(i => `<td class="c"><input type="checkbox" data-r="${r}" data-i="${esc(i)}" ${states[r].has(i) ? 'checked' : ''} onchange="lineupChange()"></td>`).join('')}
+     ${MEHR ? `<td><input type="text" value="${esc(f.note)}" placeholder="z. B. Gitarren-Solo" onchange="P.song.form[${r}].note=this.value"></td>` : ''}</tr>`).join('')}
+  </table>${MEHR ? `<div class="row" style="margin-top:8px"><input type="text" id="newinst" placeholder="weiteres Instrument (Kürzel)" style="width:220px">
+   <button onclick="SETTINGS.besetzung.push($('#newinst').value);stepBand()">hinzufügen</button></div>` : ''}</div>
+  <div class="card"><h3>Chor</h3><table><tr><th>Teil</th><th>Chor</th>${MEHR ? '<th>Ausdruck (erscheint auf dem Chorblatt)</th><th>Farbe</th>' : ''}</tr>
+   ${P.song.form.map((f, r) => `<tr><td>${esc(f.label)}</td>
+     <td><select style="width:auto" onchange="P.song.form[${r}].choir=this.value"><option value="sing">singt</option><option value="solo" ${f.choir === 'solo' ? 'selected' : ''}>nicht mitsingen (Solo)</option><option value="tacet" ${f.choir === 'tacet' ? 'selected' : ''}>Pause</option></select></td>
+     ${MEHR ? `<td><input type="text" value="${esc(f.choir_cue)}" placeholder="z. B. etwas lauter (dankbar)" onchange="P.song.form[${r}].choir_cue=this.value"></td>
+     <td><select onchange="P.song.form[${r}].choir_dyn=this.value"><option value="">automatisch</option><option value="soft" ${f.choir_dyn === 'soft' ? 'selected' : ''}>rot (leiser)</option><option value="loud" ${f.choir_dyn === 'loud' ? 'selected' : ''}>grün (lauter)</option></select></td>` : ''}</tr>`).join('')}
+  </table></div>
+  ${MEHR ? `<div class="card"><h3>Streicher</h3><p class="muted small">„automatisch“: erst später einsetzen, im Refrain Liegetöne bzw. Gegenstimme, Bridge als Steigerung, ruhiger Schluss tacet.
+   Spieler und Niveau stellst du unter „Erzeugen“ ein.</p>
+   <table><tr><th>Teil</th>${players.map(p => `<th>${esc(p.name)}</th>`).join('')}</tr>
+   ${P.song.form.map((f, r) => `<tr><td>${esc(f.label)}</td>${players.map(p => `<td><select onchange="P.song.form[${r}].strings['${esc(p.name)}']=this.value">
+      ${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${(f.strings[p.name] || 'auto') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>`).join('')}</tr>`).join('')}
+   </table></div>` : ''}
+  ${mehrBtn('render')}`;
+}
+function lineupChange() {
+  const n = P.song.form.length, sets = [...Array(n)].map(() => new Set());
+  document.querySelectorAll('.lineup input[type=checkbox]').forEach(cb => { if (cb.checked) sets[+cb.dataset.r].add(cb.dataset.i); });
+  let prev = new Set();
+  P.song.form.forEach((f, r) => { f.add = [...sets[r]].filter(x => !prev.has(x)); f.remove = [...prev].filter(x => !sets[r].has(x)); prev = sets[r]; });
+  stepBand();
+}
+
+// ---- 5: Erzeugen
+const OUTS = [['chordsheet', 'Chord-Sheet (Band)', true], ['leadsheet', 'Leadsheet (MuseScore + PDF)', true], ['chortext', 'Chor-Textblatt', true],
+  ['ueben', 'Übe-Audio (transponiert, auf euren Ablauf geschnitten)', true], ['partitur', 'Streicher-Partitur + Einzelstimmen', true],
+  ['gitarre', 'Akustikgitarre mit Griffbildern', true], ['klavier', 'Klavier (Chord-Sheet mit Intro-Noten)', true],
+  ['nebenstimmen', 'Nebenstimmen für Sänger', false], ['satb', 'Chorsatz SATB (Refrain/Choral)', false], ['uebespuren', 'Übe-Spuren aus MuseScore', false]];
+let OUT_SEL = null;
+function stepErzeugen() {
+  if (!OUT_SEL) OUT_SEL = Object.fromEntries(OUTS.map(([k, , on]) => [k, on]));
+  const pl = SETTINGS.spieler || [];
+  const list = OUTS.filter(([k]) => OUT_SEL[k]).map(([, t]) => t.replace(/ \(.*/, ''));
+  $('#tab').innerHTML = `
+  <div class="card"><h3>Fertig zum Erzeugen</h3>
+   <p>In <b>${esc(P.song.target_key)}</b> entsteht: ${list.map(esc).join(' · ')}.</p>
+   ${MEHR ? `<div class="grid2">${OUTS.map(([k, t]) => `<label class="row" style="color:var(--ink)"><input type="checkbox" ${OUT_SEL[k] ? 'checked' : ''}
+      onchange="OUT_SEL['${k}']=this.checked"> ${t}</label>`).join('')}</div>` : ''}
+   <div class="row" style="margin-top:12px"><button class="primary big" onclick="runExport()">Jetzt erzeugen</button>
+    <span class="muted small">Ziel: <a href="#" onclick="oeffnen(P.pfad + '/Export');return false">Export-Ordner im Projekt</a>${SETTINGS.bandordner ? ' + Kopie in den Band-Ordner' : ''}</span></div></div>
+  ${MEHR ? `<div class="card"><h3>Einstellungen</h3>
+    <label>Zusätzlich kopieren in (optional, z. B. Band-Ordner in der Cloud)</label>
+    <div class="row" style="flex-wrap:nowrap"><input type="text" style="flex:1" id="o_bandordner" value="${esc(SETTINGS.bandordner || '')}" placeholder="leer = nur im Projekt">
+     ${BRIDGE ? `<button class="small" onclick="ordnerWaehlen('o_bandordner','Band-Ordner wählen')">Wählen …</button>` : ''}</div>
+    <div class="grid2"><div><label>Bandname (für „…-Ablauf.mp3“)</label><input type="text" id="o_band" value="${esc(SETTINGS.band)}"></div>
+    <div><label>MP3-Qualität</label><select id="o_bitrate">${['128', '192', '256', '320', 'V0'].map(b => `<option ${String(SETTINGS.bitrate) === b ? 'selected' : ''} value="${b}">${b === 'V0' ? 'VBR V0 (variabel, höchste)' : b + ' kbit/s'}</option>`).join('')}</select></div></div>
+    <label>Streicher (Name · Instrument · Niveau)</label>
+    <div id="players">${pl.map((p, i) => playerRow(p, i)).join('')}</div>
+    <button class="small" onclick="addPlayer()">+ Spieler</button></div>` : ''}
+  <div id="exp"></div>
+  ${mehrBtn('render')}`;
+}
+async function runExport() {
+  const body = {...OUT_SEL};
+  if ($('#o_band')) {
+    body.bandordner = $('#o_bandordner').value.trim(); body.band = $('#o_band').value; body.bitrate = $('#o_bitrate').value;
+    body.spieler = [...document.querySelectorAll('.pl')].map(r => ({name: $('.pl_n', r).value, instrument: $('.pl_i', r).value, level: $('.pl_l', r).value}));
+    SETTINGS = await api('/api/einstellungen', {method: 'PUT', body: {bandordner: body.bandordner, band: body.band, bitrate: body.bitrate, spieler: body.spieler, besetzung: SETTINGS.besetzung}});
+  } else {
+    Object.assign(body, {bandordner: SETTINGS.bandordner || '', band: SETTINGS.band, bitrate: SETTINGS.bitrate, spieler: SETTINGS.spieler || []});
+  }
+  await goStep(STEP);   // Ungespeichertes vorher sichern
+  await api(`${pu(P.id)}/erzeugen`, {method: 'POST', body});
+  pollExport();
+}
+
 // Spitzentöne: die wenigen Töne, die über die Tonart entscheiden – anhören und bei Bedarf korrigieren
 let XT = null, ACTX = null;
 async function loadExtremes() {
@@ -339,7 +516,7 @@ async function fixTon(side, gi, oi, v) {
   if (v === 'x') body.unsicher = true; else if (v === '') body.unsicher = false; else body.midi = o.midi + (+v);
   await api(`${pu(P.id)}/ton`, {method: 'PUT', body});
   const d = await api(pu(P.id)); P.song = d.song;
-  tabStimmen();
+  stepTonart();
 }
 
 function toggleSinger(r, id, on) { const s = P.song.form[r].singers; if (on && !s.includes(id)) s.push(id); if (!on) P.song.form[r].singers = s.filter(x => x !== id); }
@@ -347,33 +524,10 @@ async function saveProfiles(store) {
   document.querySelectorAll('#proftab tr[data-i]').forEach(tr => { const p = PROFS[+tr.dataset.i]; if (!p) return; p.name = $('.pn', tr).value;
     ['comfort_low', 'comfort_high', 'limit_low', 'limit_high', 'weak_low'].forEach(k => p[k] = $('.p_' + k, tr).value.trim()); });
   if (store) { try { await api('/api/stimmprofile', {method: 'PUT', body: PROFS}); } catch (e) { return alert('Ton nicht erkannt: ' + e.message); } }
-  tabStimmen();
+  stepTonart();
 }
 
 // ---- 5: Erzeugen
-function tabErzeugen() {
-  const pl = SETTINGS.spieler || [];
-  const opt = (k, t, on = true) => `<label class="row" style="color:var(--ink)"><input type="checkbox" id="o_${k}" ${on ? 'checked' : ''}> ${t}</label>`;
-  $('#tab').innerHTML = `
-  <div class="grid2"><div class="card"><h3>Was soll entstehen?</h3>
-    ${opt('chordsheet', 'Chord-Sheet (Band-Partitur)')}${opt('leadsheet', 'Leadsheet (MuseScore + PDF)')}${opt('partitur', 'Partitur mit Streicherstimmen + Einzelstimmen')}
-    ${opt('chortext', 'Chor-Textblatt (eine Seite)')}${opt('gitarre', 'Akustikgitarre (A-GIT, mit Griffbildern)')}${opt('klavier', 'Klavier (Chord-Sheet mit Intro-Noten)')}
-    ${opt('nebenstimmen', 'Nebenstimmen für Sänger (über/unter der Melodie)', false)}${opt('satb', 'Chorsatz SATB (Refrain/Choral)', false)}
-    ${opt('ueben', 'Übe-Audio: Original transponiert + auf euren Ablauf geschnitten')}${opt('uebespuren', 'Übe-Spuren aus MuseScore', false)}
-   </div><div class="card"><h3>Einstellungen</h3>
-    <p class="small" style="margin-top:0">Ziel: <a href="#" onclick="oeffnen(P.pfad + '/Export');return false">${esc(P.pfad)}/Export</a></p>
-    <label>Zusätzlich kopieren in (optional, z. B. Band-Ordner in der Cloud)</label>
-    <div class="row" style="flex-wrap:nowrap"><input type="text" style="flex:1" id="o_bandordner" value="${esc(SETTINGS.bandordner || '')}" placeholder="leer = nur im Projekt">
-     ${BRIDGE ? `<button class="small" onclick="ordnerWaehlen('o_bandordner','Band-Ordner wählen')">Wählen …</button>` : ''}</div>
-    <div class="grid2"><div><label>Bandname (für „…-Ablauf.mp3“)</label><input type="text" id="o_band" value="${esc(SETTINGS.band)}"></div>
-    <div><label>MP3-Qualität</label><select id="o_bitrate">${['128', '192', '256', '320', 'V0'].map(b => `<option ${String(SETTINGS.bitrate) === b ? 'selected' : ''} value="${b}">${b === 'V0' ? 'VBR V0 (variabel, höchste)' : b + ' kbit/s'}</option>`).join('')}</select></div></div>
-    <label>Streicher (Name · Instrument · Niveau)</label>
-    <div id="players">${pl.map((p, i) => playerRow(p, i)).join('')}</div>
-    <button class="small" onclick="addPlayer()">+ Spieler</button>
-   </div></div>
-  <div class="row"><button class="primary" onclick="runExport()">Jetzt erzeugen</button></div>
-  <div id="exp"></div>`;
-}
 function playerRow(p, i) {
   return `<div class="row pl" style="margin:4px 0"><input type="text" class="pl_n" value="${esc(p.name)}" style="width:160px">
    <select class="pl_i">${['Violine', 'Bratsche', 'Violoncello'].map(x => `<option ${x === p.instrument ? 'selected' : ''}>${x}</option>`).join('')}</select>
@@ -381,15 +535,6 @@ function playerRow(p, i) {
    <button class="small danger" onclick="this.parentElement.remove()">✕</button></div>`;
 }
 function addPlayer() { $('#players').insertAdjacentHTML('beforeend', playerRow({name: 'Violine 2', instrument: 'Violine', level: 'mittel'}, 0)); }
-async function runExport() {
-  const ids = ['chordsheet', 'leadsheet', 'partitur', 'chortext', 'gitarre', 'klavier', 'nebenstimmen', 'satb', 'ueben', 'uebespuren'];
-  const body = Object.fromEntries(ids.map(k => [k, $('#o_' + k).checked]));
-  body.bandordner = $('#o_bandordner').value.trim(); body.band = $('#o_band').value; body.bitrate = $('#o_bitrate').value;
-  body.spieler = [...document.querySelectorAll('.pl')].map(r => ({name: $('.pl_n', r).value, instrument: $('.pl_i', r).value, level: $('.pl_l', r).value}));
-  SETTINGS = await api('/api/einstellungen', {method: 'PUT', body: {bandordner: body.bandordner, band: body.band, bitrate: body.bitrate, spieler: body.spieler, besetzung: SETTINGS.besetzung}});
-  await api(`${pu(P.id)}/erzeugen`, {method: 'POST', body});
-  pollExport();
-}
 async function pollExport() {
   const j = await api(`${pu(P.id)}/erzeugen`), box = $('#exp'); if (!box) return;
   if (j.status === 'läuft') { box.innerHTML = `<div class="card"><h3>Wird erzeugt …</h3><div class="log">${esc((j.log || []).join('\n'))}</div></div>`; setTimeout(pollExport, 1500); return; }
@@ -418,7 +563,7 @@ async function showSettings() {
    <label>MuseScore-Programm (leer = automatisch suchen)</label><input type="text" id="e_ms" value="${esc(SETTINGS.musescore)}" placeholder="${esc(g.musescore)}">
    <p class="small">Gefunden: MuseScore: <b>${esc(g.musescore || 'nicht gefunden')}</b> · LibreOffice: <b>${esc(g.libreoffice || 'nicht gefunden')}</b> ·
    Rubber Band: <b>${esc(g.rubberband || 'nicht gefunden')}</b></p>
-   <label>Spracherkennung</label><div id="sprachbox2"></div>
+   <label>KI-Modelle (Spracherkennung, Stimmtrennung)</label><div id="sprachbox2"></div>
    <button class="primary" onclick="saveSettings()">Speichern</button></div>`;
   sprachBox('#sprachbox2');
 }

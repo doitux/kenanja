@@ -22,18 +22,28 @@ Alles läuft **lokal auf dem eigenen Rechner** (Linux, ohne Grafikkarte) – in 
 
 ## Ablauf
 
-1. **Neuer Song:** Audio wählen, Titel/Autoren eintragen, Liedtext einfügen (in Sing-Reihenfolge, gern mit
-   Überschriften wie `[Verse 1]`, `[Chorus]`; Hinweise wie `(Ladies)` / `(Men)` werden übernommen).
-   „Text suchen“ öffnet eine Websuche – kopiert wird von Hand.
-2. **Analyse** (einige Minuten): Gesang/Begleitung trennen, Tempo, Taktart (3/4 oder 4/4), Taktanfänge,
-   Tonart, Akkorde (inkl. Slash-Akkorde), Melodie, Text auf die Melodie legen, Formteile.
-3. **Song & Text prüfen:** Akkorde pro Takt und Textzeilen korrigieren, jeden Teil im Original anhören.
-4. **Ablauf:** Teile verschieben, doppeln, wiederholen, entfernen; festlegen, welches Original-Audio ein Teil
-   im Übe-Audio bekommt (z. B. Schluss-Chorus mit dem ruhigen Audio von Chorus 1).
-5. **Besetzung:** Raster „Teil × Instrument“ → daraus entstehen die +/− Angaben. Chor-Anweisungen
-   (rot = leiser, grün = lauter, lila = Solo/nicht mitsingen), Streicherrollen (oder automatisch).
-6. **Stimmen & Tonart:** Wer singt welchen Teil, singt die Gemeinde mit? Rangliste aller Tonarten mit Begründung.
+Kenanja führt Schritt für Schritt durch alles („Weiter“ speichert automatisch). Jeder Schritt zeigt zuerst nur
+das Wichtigste; alle Feinheiten stehen hinter „Willst du noch mehr einstellen?“.
+
+1. **Neuer Song:** Aufnahme wählen, Liedtext einfügen (in Sing-Reihenfolge, gern mit Überschriften wie
+   `[Strophe 1]`, `[Refrain]`; Hinweise wie `(Ladies)` / `(Men)` werden übernommen), analysieren.
+   Unter „Mehr“: woher der Ablauf kommt (wie in der Aufnahme · wie im Liedtext · wie in einem vorhandenen
+   Leadsheet), wie die Melodie notiert wird (siehe unten) und in welchem Tempo die Notenwerte stehen.
+2. **Analyse** (einige Minuten): Gesang/Begleitung und Leadstimme/Gruppe trennen, Tempo, Taktart (3/4 oder 4/4),
+   Taktanfänge, Tonart, Akkorde (inkl. Slash-Akkorde), Melodie, Text auf die Melodie legen, Formteile.
+3. **Anhören & prüfen:** jeden Teil im Original anhören, Text korrigieren (unter „Mehr“ auch die Akkorde je Takt).
+4. **Ablauf:** Quelle umschalten, Teile verschieben oder entfernen; unter „Mehr“ doppeln, wiederholen und festlegen,
+   welches Original-Audio ein Teil im Übe-Audio bekommt (z. B. Schluss-Refrain mit dem ruhigen Audio vom ersten).
+5. **Tonart:** Vorschläge passend zu euren Stimmprofilen und zur Gemeinde; unter „Mehr“ Spitzentöne prüfen,
+   wer welchen Teil singt, Stimmprofile.
+6. **Band & Chor:** Raster „Teil × Instrument“ → daraus entstehen die +/− Angaben; Chor singt/Solo/Pause.
+   Unter „Mehr“ Chor-Anweisungen (rot = leiser, grün = lauter) und Streicherrollen.
 7. **Erzeugen:** alle Dateien in einen Ordner `Titel - Autor/` (Namensschema wie im Bandordner).
+
+**Melodie im Leadsheet:** Standard ist „wie beim ersten Mal“ – die in Strophe 1, Refrain 1 usw. erkannte
+Melodie gilt für alle Wiederholungen und wird auf deren Text und Silben gelegt, egal was der Leadsänger später
+singt. Wahlweise zusätzlich notiert: die abweichende zweite Stimme des Leadsängers oder (mehrstimmig) die
+Stimmen der Gruppe, wo sie neben der Melodie eigene Töne singen.
 
 In MuseScore korrigierte Leadsheets lassen sich wieder **importieren** – danach Chord-Sheet, Streicher usw. neu erzeugen.
 
@@ -100,16 +110,17 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
 * Akkorde: Grundgerüst stimmt meist; Feinheiten (sus, add9, Slash) brauchen einen prüfenden Blick.
 * Melodie: Kenanja trennt die Leadstimme vom Chor/Backgroundgesang und prüft zusätzlich die ganze
   Gesangsspur – genommen wird die Fassung, bei der wiederholte Zeilen am einheitlichsten klingen.
+  Die Melodie des ersten Durchgangs gilt für alle Wiederholungen (siehe oben).
   Notiert wird wie ein Gemeinde-Leadsheet: eine Note je Silbe, gleiche Zeilen gleich (Mehrheit der
   Durchgänge), einfache Notenwerte bevorzugt, durchgehend in einer Lage (Frauenlage).
   Das Leadsheet trotzdem in MuseScore durchsehen.
 * Notenwerte: Viele Lieder lassen sich in zwei Tempi notieren (z. B. 65 oder 130 bpm). Beim Neu-Analysieren
   lässt sich „doppeltes“ oder „halbes Tempo“ wählen.
-* Tonart-Wahl: Die höchsten und tiefsten Töne entscheiden über die Zieltonart. Unter „Stimmen & Tonart“
+* Tonart-Wahl: Die höchsten und tiefsten Töne entscheiden über die Zieltonart. Unter „Tonart → Mehr“
   listet Kenanja genau diese Stellen; jede lässt sich anhören (getrennte Leadstimme und erkannter Ton)
   und mit einem Klick korrigieren oder als Verzierung von der Wertung ausnehmen. Einzelne, nur kurz
   vorkommende Ausreißer nach oben/unten zählen von vornherein nicht.
-* Text: Mit der Spracherkennung (Einstellungen → „Spracherkennung herunterladen“, einmalig ca. 1 GB,
+* Text: Mit den KI-Modellen (Einstellungen → „KI-Modelle herunterladen“, einmalig ca. 1,2 GB,
   danach offline; oder `kenanja sprachmodell`) erkennt Kenanja die gesungenen Wörter und richtet den
   eingefügten Liedtext Buchstabe für Buchstabe an der Aufnahme aus – jede Silbe bekommt ihren eigenen
   Zeitpunkt. Das verbessert Text, Melodie und Rhythmus deutlich. Ohne sie wird der Text über die
@@ -121,6 +132,8 @@ Erfahrungswerte aus Tests mit echten Aufnahmen:
 * Akkorderkennung: **BTC** – Bi-directional Transformer for Chord recognition (Park et al., ISMIR 2019), MIT-Lizenz,
   https://github.com/jayg996/BTC-ISMIR19 – hier ohne PyTorch in numpy nachgerechnet.
 * Gesangstrennung: **UVR-MDX-NET Voc_FT**, Leadstimme vom Chor: **UVR_MDXNET_KARA_2** – beide aus dem Ultimate-Vocal-Remover-Projekt (ONNX), https://github.com/TRvlvr/model_repo
+* Leadstimme/Gruppe (mit den KI-Modellen): **BS-RoFormer Karaoke** von frazer & becruily (Gewichte werden aus dem
+  öffentlichen Modell geladen, Netzstruktur nach lucidrains/BS-RoFormer, MIT) – läuft ohne PyTorch über onnxruntime
 * Tonhöhe: pYIN (librosa) · Silbentrennung: Pyphen · Noten: music21, MuseScore · Text: LibreOffice
 * Transponieren: **Rubber Band** (R3-Engine, Formanterhalt)
 * Spracherkennung (optional): **sherpa-onnx** (Apache-2.0) mit **NVIDIA Parakeet TDT 0.6B v3** (CC-BY-4.0) für die Wörter

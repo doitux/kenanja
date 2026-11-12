@@ -48,7 +48,7 @@ def main(argv=None):
     e.add_argument('--nebenstimmen', action='store_true')
     e.add_argument('--satb', action='store_true')
     sub.add_parser('pruefen', help='Installation prüfen')
-    sp = sub.add_parser('sprachmodell', help='Spracherkennung einrichten (einmaliger Download, ca. 1 GB)')
+    sp = sub.add_parser('sprachmodell', help='Spracherkennung und Stimmtrennung einrichten (einmaliger Download, ca. 1,2 GB)')
     sp.add_argument('--test', action='store_true', help='danach kurz ausprobieren')
     de = sub.add_parser('deinstallieren', help='Kenanja restlos entfernen (Projekte bleiben, außer --alles)')
     de.add_argument('--alles', action='store_true', help='auch alle Kenanja-Projekte löschen')
@@ -109,6 +109,9 @@ def main(argv=None):
                 print(f'  {p} %', flush=True)
             last[0] = p
         print('Sprachmodell:', A.ensure_model(prog))
+        from .audio import roformer as R
+        if R.available():
+            print('Stimmtrennung:', R.ensure_model(prog))
         if args.test:
             import numpy as np
             t = np.arange(16000 * 2) / 16000
@@ -117,6 +120,11 @@ def main(argv=None):
             lp, ch = A.ctc_logprobs(y, 'abc')
             A.align_words(lp, ch, ['ab', 'c'], 0.0, 2.0)
             print('Spracherkennung: Test ok')
+            if R.available():
+                z = (0.1 * np.random.default_rng(0).standard_normal((2, 44100))).astype(np.float32)
+                o = R.LeadRoformer().separate(z)
+                assert o.shape == z.shape and np.isfinite(o).all()
+                print('Stimmtrennung: Test ok')
     elif args.cmd == 'pruefen':
         check()
 

@@ -834,7 +834,8 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
                anchors: Optional[list[Optional[float]]] = None, vnotes: Optional[list] = None,
                line_syls: Optional[list] = None, assign=None, align=None, labels: Optional[list] = None,
                texts: Optional[list[str]] = None, old_ranges: Optional[list] = None,
-               scale: Optional[set] = None, syl_times: Optional[list] = None):
+               scale: Optional[set] = None, syl_times: Optional[list] = None, melodie: str = 'erste',
+               mel_labels: Optional[list] = None):
     """-> (Liste je Zeile: [(start_s, end_s, midi, fpitch)] oder None, Track, Cells, Zahl angeglichener Silben)"""
     tr = tr or pitch_track(y22)
     cl = Cells(tr, beats, phase, bpb)
@@ -994,9 +995,14 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
         struct = [(lb, k) if lb else None for lb, cnt in zip(labels, blocks) for k in range(cnt)]
         if len(struct) != len(lines):
             struct = None
+    heard = [[n.pitch for n in ln] if ln else None for ln in lines]      # wie gesungen (vor dem Angleichen)
     changed = unify_repeats(lines, anchors, texts, scale, struct, cl.bpb * SUB)
     if dump:
         STATS['dump']['einheit'] = [[n.cell for n in ln] if ln else None for ln in lines]
+    STATS['vorlage_uebertragen'] = 0
+    ml = mel_labels if mel_labels is not None else labels
+    if melodie in ('erste', 'zweite', 'mehrstimmig') and ml and blocks and len(ml) == len(blocks):
+        STATS['vorlage_uebertragen'] = copy_first_melody(lines, anchors, ml, blocks, cl.bpb * SUB)
     # Zeilenende wie im Leadsheet: letzter Ton mindestens bis zum nächsten Schlag (eher eine Viertel), auf einem
     # Schlag endend – aber nie in die nächste Zeile hinein
     starts = sorted(ln[0].cell for ln in lines if ln)
@@ -1012,10 +1018,94 @@ def transcribe(y22: np.ndarray, beats: np.ndarray, phase: int, bpb: int, counts:
         if want > last.cell:
             last.end = want
     out = []
-    for ln in lines:
+    for li, ln in enumerate(lines):
         if not ln:
             out.append(None)
             continue
+        alt = second_voice([n.pitch for n in ln], heard[li]) if melodie == 'zweite' else [None] * len(ln)
         out.append([(cl.t(n.cell), cl.t(n.end), int(n.pitch),
-                     float(n.fpitch) if n.fpitch is not None else float(n.pitch)) for n in ln])
+                     float(n.fpitch) if n.fpitch is not None else float(n.pitch), a)
+                    for n, a in zip(ln, alt)])
     return out, tr, cl, changed, ('Taktraster' if regular else 'frei')
+
+
+def second_voice(melody: list, other: Optional[list], min_share: float = 0.4) -> list:
+    """Zweite Stimme zu einer Melodiezeile: die andere Stimme (gleiche Silben) dort, wo sie deutlich abweicht.
+    Nur wenn sie über einen guten Teil der Zeile eigenständig verläuft (typisch: Terz/Sexte darüber oder
+    darunter) – einzelne Abweichungen sind eher Erkennungsfehler und bleiben weg."""
+    if not other or len(other) != len(melody):
+        return [None] * len(melody)
+    out = []
+    for m, o in zip(melody, other):
+        if o is None:
+            out.append(None)
+            continue
+        # in die Nähe der Melodie legen (höchstens eine Oktave Abstand)
+        while o - m > 9:
+            o -= 12
+        while m - o > 9:
+            o += 12
+        out.append(int(o) if abs(o - m) >= 2 and (o - m) % 12 else None)
+    if sum(x is not None for x in out) < max(2, min_share * len(melody)):
+        return [None] * len(melody)
+    return out
+
+
+def same_tune(a: list, b: list, min_corr: float = 0.6) -> bool:
+    """Gleicher Melodieverlauf? Auch eine parallele zweite Stimme (Terz darüber) hat denselben Verlauf –
+    eine andere Melodie (Variation, Tag) nicht."""
+    a = np.array([x for x in a], dtype=float)
+    b = np.array([x for x in b], dtype=float)
+    if len(a) < 3:
+        return True
+    if a.std() < 0.5 or b.std() < 0.5:
+        return abs(np.median(a - b) - round(np.median(a - b) / 12) * 12) <= 4 or a.std() < 0.5 and b.std() < 0.5
+    return float(np.corrcoef(a, b)[0, 1]) >= min_corr
+
+
+def copy_first_melody(lines: list, anchors: list, labels: list, blocks: list, bar_cells: int) -> int:
+    """Melodie des ersten Durchgangs (Strophe 1, Refrain 1 …) auf alle späteren Durchgänge derselben Art
+    übertragen – auf deren eigenen Text und Rhythmus. So steht im Leadsheet immer die Melodie, auch wenn der
+    Leadsänger später eine zweite Stimme singt. Gleiche Silbenzahl: Ton für Ton; sonst nach Lage im Takt."""
+    starts, k = [], 0
+    for cnt in blocks:
+        starts.append(k)
+        k += cnt
+    first: dict = {}
+    changed = 0
+    for bi, (lb, cnt) in enumerate(zip(labels, blocks)):
+        if not lb or not cnt:
+            continue
+        if lb not in first:
+            if any(lines[starts[bi] + j] for j in range(cnt)):
+                first[lb] = bi
+            continue
+        tb = first[lb]
+        for j in range(min(cnt, blocks[tb])):
+            T, C = lines[starts[tb] + j], lines[starts[bi] + j]
+            if not T or not C:
+                continue
+            if not 0.7 <= len(C) / len(T) <= 1.4:
+                continue
+            if len(T) == len(C):
+                src = [t.pitch for t in T]
+                srcf = [t.fpitch for t in T]
+            else:
+                aT, aC = anchors[starts[tb] + j], anchors[starts[bi] + j]
+                if aT is None or aC is None:
+                    continue
+                # Lage im Takt: Verschiebung um ganze Takte so wählen, dass die Zeilenanfänge zusammenpassen
+                sh = min((-bar_cells, 0, bar_cells), key=lambda d: abs((C[0].cell - aC + d) - (T[0].cell - aT)))
+                src, srcf = [], []
+                for n in C:
+                    pos = n.cell - aC + sh + aT
+                    tn = max((t for t in T if t.cell <= pos), key=lambda t: t.cell, default=T[0])
+                    src.append(tn.pitch)
+                    srcf.append(tn.fpitch)
+            if not same_tune(src, [n.pitch for n in C]):
+                continue          # anderer Melodieverlauf (Variation, Tag, falsche Überschrift): so lassen
+            for n, p, fp in zip(C, src, srcf):
+                if p is not None and n.pitch != p:
+                    n.pitch, n.fpitch = p, fp
+                    changed += 1
+    return changed

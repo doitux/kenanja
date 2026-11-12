@@ -88,10 +88,20 @@ def lead_or_group(voc22: np.ndarray, lead22: np.ndarray, sr: int = 22050) -> np.
     return (w * l + (1 - w) * v).astype(np.float32)
 
 
-def lead_stem(path, voc: np.ndarray, progress=None, cache=None) -> np.ndarray:
-    """Nur die Leadstimme (Chor/Backgroundgesang entfernt) – zwischengespeichert als FLAC."""
+def lead_stem(path, voc: np.ndarray, progress=None, cache=None, model: str = 'mdx') -> np.ndarray:
+    """Nur die Leadstimme (Chor/Backgroundgesang entfernt) – zwischengespeichert als FLAC.
+    model='mdx': UVR-MDX-KARA (schnell); model='roformer': BS-RoFormer-Karaoke (genauer, langsamer)."""
     import soundfile as sf
-    f = work_dir(path, cache) / 'lead.flac'
+    wd = work_dir(path, cache)
+    if model == 'roformer':
+        from . import roformer as R
+        f = wd / 'lead_rof.flac'
+        if f.exists():
+            return sf.read(f, dtype='float32')[0].T
+        lead = R.LeadRoformer().separate(voc, progress)
+        sf.write(f, lead.T, SR)
+        return lead
+    f = wd / 'lead.flac'
     if f.exists():
         return sf.read(f, dtype='float32')[0].T
     from .separate import separate
@@ -627,6 +637,7 @@ def parse_lyrics(text: str) -> list[TextBlock]:
     for gi, g in enumerate(groups):
         for b in g:
             b.label = names[min(gi, len(names) - 1)]
+            b.geraten = True        # Überschrift nur geraten – nicht für „gleiche Melodie wie …“ verwenden
     for b in blocks:
         if not hasattr(b, 'cues'):
             b.cues = []
@@ -1014,7 +1025,7 @@ def _label_counter(labels):
 
 def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors: str = '',
                progress=None, use_asr: bool = True, cache=None, gemeinde: bool = True,
-               tempo_faktor: float = 1.0) -> AnalysisResult:
+               tempo_faktor: float = 1.0, melodie: str = 'erste') -> AnalysisResult:
     import librosa
     rep = {}
 
@@ -1046,18 +1057,31 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
     rep['takt'] = f'{bpb}/4'
     rep['taktart_werte'] = meter_scores
     step('Leadstimme vom Chor trennen', 0.62)
-    try:
-        lead = lead_stem(path, voc, (lambda f: progress('Leadstimme vom Chor trennen', 0.62 + 0.1 * f))
-                         if progress else None, cache)
-        lead22 = lead_or_group(voc22, librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050))
-        if os.environ.get('KENANJA_TEST_STEM') == 'gesang':
-            lead22 = voc22
-    except Exception as e:   # Modell nicht ladbar o. ä.: mit der ganzen Gesangsspur weiter
-        rep['leadstimme'] = f'nicht getrennt ({type(e).__name__})'
+    # Leadstimme: zwei Trennmodelle – je Song gewinnt später das, bei dem die Wiederholungen einheitlicher klingen
+    from . import roformer as _R
+    want = os.environ.get('KENANJA_TEST_LEAD', '')
+    models = [m for m in ('mdx', 'roformer') if (m == 'mdx' or _R.ready()) and (not want or want == m)]
+    lead_cands = []      # (Name, roh, mit Gruppen-Ausgleich)
+    for mi, m in enumerate(models):
+        try:
+            lo, hi = 0.62 + 0.1 * mi / len(models), 0.62 + 0.1 * (mi + 1) / len(models)
+            lead = lead_stem(path, voc, (lambda f, lo=lo, hi=hi: progress('Leadstimme vom Chor trennen', lo + (hi - lo) * f))
+                             if progress else None, cache, model=m)
+            raw = librosa.resample(lead.mean(0), orig_sr=SR, target_sr=22050)
+            lead_cands.append(('RoFormer' if m == 'roformer' else 'MDX', raw, lead_or_group(voc22, raw)))
+        except Exception as e:   # Modell nicht ladbar o. ä.
+            rep['leadstimme'] = f'{m} nicht getrennt ({type(e).__name__})'
+    if lead_cands:
+        rep['stimmtrennung'], lead22_raw, lead22 = lead_cands[0]
+    else:                       # mit der ganzen Gesangsspur weiter
+        lead22_raw = lead22 = voc22
+    if os.environ.get('KENANJA_TEST_STEM') == 'gesang':
         lead22 = voc22
     step('Melodie', 0.74)
     note_syl: dict[int, Syllable] = {}
     blocks = parse_lyrics(lyrics_text) if lyrics_text and lyrics_text.strip() else []
+    if blocks:
+        rep['textbloecke'] = [b.label for b in blocks]
     line_ranges = []
     if blocks and gemeinde:
         # Gemeinde-Modus: eine Note je Silbe, Zeilen auf ganzen Takten, gleiche Zeilen gleich notiert
@@ -1085,6 +1109,7 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
         anchors = [((grid.beat_pos(vm[r[0]].start) - phase) / bpb if r else None) for r in rg0]
         line_syls = [[s_ for s_ in syls if s_.line == li] for li in range(len(lines))]
         labels = [re.sub(r'[\d\s.:]+$', '', (b_.label or '')).strip().lower() or None for b_ in blocks]
+        mel_labels = [None if getattr(b_, 'geraten', False) else lb_ for b_, lb_ in zip(blocks, labels)]
         # 1b. Spracherkennung (optional): Wortzeiten verankern Zeilen und Silben dort, wo sie gesungen wurden
         syl_times = None
         if use_asr:
@@ -1126,18 +1151,33 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
                 syl_times = None
         # 2. Blöcke verorten (Wiederholungen über die Melodie), je Silbe eine Note, gleiche Zeilen angleichen
         old_ranges = [((vm[r[0]].start, vm[r[1] - 1].end) if r and r[1] > r[0] else None) for r in rg0]
-        def _transcribe(stem22, vn_):
+        def _transcribe(stem22, vn_, mel=melodie):
             return G.transcribe(
                 stem22, beats, phase, bpb, counts, snap=_snap, blocks=[len(b_.lines) for b_ in blocks],
                 anchors=anchors, vnotes=vn_, line_syls=line_syls, align=align_lines,
                 assign=lambda sy, ns: G.assign_syllables_sung(
                     sy, ns, lambda n: [VNote(n.start, (n.start + n.end) / 2, n.pitch, n.strength, n.fpitch),
                                        VNote((n.start + n.end) / 2, n.end, n.pitch, n.strength, n.fpitch)]),
-                labels=labels, texts=lines, old_ranges=old_ranges, syl_times=syl_times,
+                labels=labels, texts=lines, old_ranges=old_ranges, syl_times=syl_times, melodie=mel,
+                mel_labels=mel_labels,
                 scale={(tpc_pc(key_tpc) + d) % 12 for d in ((0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11))})
         res_lines, g_tr, _, changed, gmode = _transcribe(lead22, vn0)
         dis_lead = G.STATS.get('ton_angeglichen', 0) / max(1, G.STATS.get('silben_in_gruppen', 0))
         rep['stimme'] = 'Leadstimme'
+        stats_best = dict(G.STATS)
+        for name_, raw_, l22_ in lead_cands[1:]:
+            # weiteres Trennmodell: das mit den einheitlicheren Wiederholungen gewinnt
+            step('Melodie gegenprüfen', 0.82)
+            vn_c = vocal_notes(l22_)
+            snap_to_key(vn_c, key_tpc, minor)
+            alt_c = _transcribe(l22_, vn_c)
+            dis_c = G.STATS.get('ton_angeglichen', 0) / max(1, G.STATS.get('silben_in_gruppen', 0))
+            DEBUG.setdefault('modelle', []).append((rep['stimmtrennung'], dis_lead, name_, dis_c))
+            if dis_c < dis_lead:
+                res_lines, g_tr, _, changed, gmode = alt_c
+                dis_lead, lead22, lead22_raw, rep['stimmtrennung'] = dis_c, l22_, raw_, name_
+                stats_best = dict(G.STATS)
+        G.STATS.clear(); G.STATS.update(stats_best)
         if syl_times is not None and lead22 is not voc22 and os.environ.get('KENANJA_TEST_STEM') != 'lead':
             # Gegenprobe mit der ganzen Gesangsspur: Manchmal trennt das Lead-Modell die Melodie falsch ab
             # (Frauenstimme als „Chor“ o. ä.). Welche Spur passt, zeigt sich daran, wie einheitlich die
@@ -1151,7 +1191,51 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             if dis_voc < dis_lead - 0.04:
                 res_lines, g_tr, _, changed, gmode = alt
                 rep['stimme'] = 'ganze Gesangsspur'
+            elif os.environ.get('KENANJA_TEST_ZEILENWAHL'):
+                # je Zeile: singt die Gruppe laut mit (Chor-/Gruppengesang), trägt sie oft die Melodie, während
+                # der Leadsänger eine zweite Stimme singt – dann die Zeile aus der ganzen Gesangsspur nehmen
+                theta = float(os.environ['KENANJA_TEST_ZEILENWAHL'])
+                n_ = min(len(voc22), len(lead22_raw))
+                back22 = voc22[:n_] - lead22_raw[:n_]
+                swapped = 0
+                for li, (la, lv) in enumerate(zip(res_lines, alt[0])):
+                    if not la or not lv:
+                        continue
+                    a_, b_ = int(la[0][0] * 22050), int(la[-1][1] * 22050)
+                    if b_ - a_ < 2205:
+                        continue
+                    rl = float(np.sqrt(np.mean(lead22_raw[a_:b_] ** 2)) + 1e-9)
+                    rb = float(np.sqrt(np.mean(back22[a_:b_] ** 2)) + 1e-9)
+                    if rb / rl > theta:
+                        res_lines[li] = lv
+                        swapped += 1
+                rep['stimme'] = f'Leadstimme, {swapped} Zeilen aus der Gruppe'
+        if melodie == 'mehrstimmig' and lead22 is not voc22:
+            # Mehrstimmig: die Gruppe/Backgroundstimmen (Gesang ohne Lead) Silbe für Silbe mitschreiben und als
+            # zweite Stimme dort notieren, wo sie eigenständig neben der Melodie verläuft
+            step('Zweite Stimme', 0.86)
+            try:
+                n_ = min(len(voc22), len(lead22_raw))
+                back22 = (voc22[:n_] - lead22_raw[:n_]).astype(np.float32)
+                vn_b = vocal_notes(back22)
+                snap_to_key(vn_b, key_tpc, minor)
+                stats_keep = dict(G.STATS)
+                back_lines = _transcribe(back22, vn_b, 'roh')[0]
+                G.STATS.clear(); G.STATS.update(stats_keep)
+                n2 = 0
+                for li, ln in enumerate(res_lines):
+                    bl = back_lines[li] if li < len(back_lines) else None
+                    if not ln or not bl or len(bl) != len(ln):
+                        continue
+                    sv = G.second_voice([x[2] for x in ln], [x[2] for x in bl])
+                    res_lines[li] = [(x[0], x[1], x[2], x[3], a) for x, a in zip(ln, sv)]
+                    n2 += sum(a is not None for a in sv)
+                rep['zweite_stimme'] = f'{n2} Töne'
+            except Exception as e:
+                rep['zweite_stimme'] = f'nicht möglich ({type(e).__name__})'
         rep['zuordnung'] = gmode
+        if G.STATS.get('vorlage_uebertragen'):
+            rep['melodie'] = f"Melodie aus dem ersten Durchgang übernommen ({G.STATS['vorlage_uebertragen']} Töne angepasst)"
         DEBUG['track'] = (np.asarray(g_tr.t), np.asarray(g_tr.midi))
         rep['_rohnoten'] = len(vm)
         vnotes = []
@@ -1159,8 +1243,10 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             if not ln:
                 continue
             ls = [s_ for s_ in syls if s_.line == li]
-            for (t0, t1, p, fp), sy in zip(ln, ls):
+            for (t0, t1, p, fp, *alt), sy in zip(ln, ls):
                 vn = VNote(t0, t1, p, fpitch=fp)
+                if alt and alt[0] is not None:
+                    vn.alt_delta = alt[0] - p
                 vnotes.append(vn)
                 note_syl[id(vn)] = sy
             line_ranges.append((li, ln[0][0], ln[-1][1]))
@@ -1370,6 +1456,9 @@ def build_song(path, lyrics_text: Optional[str] = None, title: str = '', authors
             pos = t - bi * bpb
             d = min(e - t, F(bpb) - pos)
             note = Note(onset=pos, dur=d, pitch=n.pitch, tpc=tpc, tie=(t + d < e))
+            delta = getattr(n, 'alt_delta', None)
+            if delta:                     # mehrstimmig: zusätzlich gesungene zweite Stimme
+                note.extra = [(n.pitch + delta, spell_pitch(n.pitch + delta, key_tpc))]
             if first and sy is not None:
                 note.lyrics = {0: (sy.text, sy.syllabic)}
             bars[bi].melody.append(note)

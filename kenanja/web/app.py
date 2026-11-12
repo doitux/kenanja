@@ -273,17 +273,20 @@ def put_settings(data: dict):
 # ------------------------------------------------------------------ Spracherkennung (optional) ----
 
 def _sprache_status() -> dict:
-    from ..audio import asr as A
+    from ..audio import asr as A, roformer as R
     job = JOBS.get('__sprache', {})
-    return {'verfuegbar': A.available(), 'bereit': A.all_ready(), 'laeuft': job.get('status') == 'läuft',
+    return {'verfuegbar': A.available(), 'bereit': A.all_ready() and (R.ready() or not R.available()),
+            'laeuft': job.get('status') == 'läuft',
             'fortschritt': job.get('fortschritt', 0.0), 'fehler': job.get('fehler', '')}
 
 
 def _sprache_laden():
-    from ..audio import asr as A
+    from ..audio import asr as A, roformer as R
     job = JOBS['__sprache']
     try:
-        A.ensure_model(lambda f: job.update(fortschritt=round(f, 3)))
+        A.ensure_model(lambda f: job.update(fortschritt=round(0.83 * f, 3)))
+        if R.available():
+            R.ensure_model(lambda f: job.update(fortschritt=round(0.83 + 0.17 * f, 3)))
         job.update(status='fertig', fortschritt=1.0)
     except Exception as e:
         traceback.print_exc()
@@ -333,7 +336,42 @@ def _write_meta(pid, **kw):
     meta.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding='utf-8')
 
 
-def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str, tempo_faktor: float = 1.0):
+MELODIE = ('erste', 'zweite', 'mehrstimmig')
+
+
+def _opts(data: dict, meta: dict) -> dict:
+    """Analyse-Optionen aus Formular/Anfrage, sonst wie beim letzten Mal."""
+    def pick(k, default):
+        v = data.get(k)
+        return meta.get(k, default) if v in (None, '') else v
+    tf = float(pick('tempo_faktor', 1.0) or 1.0)
+    mel = str(pick('melodie', 'erste'))
+    abl = str(pick('ablauf', 'audio'))
+    return {'tempo_faktor': tf if tf in (0.5, 1.0, 2.0) else 1.0,
+            'melodie': mel if mel in MELODIE else 'erste',
+            'ablauf': abl if abl in ('audio', 'text', 'leadsheet') else 'audio'}
+
+
+def _apply_ablauf(pid: str, song: Song, quelle: str) -> list[str]:
+    from .. import ablauf as AB
+    labels = None
+    if quelle == 'leadsheet':
+        ls = _leadsheet_file(pid)
+        if not ls:
+            quelle = 'audio'
+        else:
+            labels = AB.leadsheet_labels(ls)
+    return AB.apply_source(song, quelle, labels)
+
+
+def _leadsheet_file(pid: str) -> Optional[Path]:
+    d = sub(pdir(pid), 'original')
+    fs = sorted(d.glob('leadsheet.*'))
+    return fs[0] if fs else None
+
+
+def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str, tempo_faktor: float = 1.0,
+                  melodie: str = 'erste', ablauf: str = 'audio'):
     from ..audio.analysis import build_song
     job = JOBS[pid]
     try:
@@ -342,9 +380,12 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str, te
         # Zwischenspeicher (getrennte Spuren) im Projekt – wird mit dem Projekt gelöscht
         d = projects_dir() / pid
         res = build_song(audio, text or None, title=title, authors=authors, progress=prog, cache=sub(d, 'analyse'),
-                         tempo_faktor=tempo_faktor)
+                         tempo_faktor=tempo_faktor, melodie=melodie)
         song = res.song
         song.audio = str(audio)
+        fehlt = _apply_ablauf(pid, song, ablauf)
+        if fehlt:
+            res.report['ablauf_fehlt'] = fehlt
         old = d / SONG_FILE
         if old.exists():  # bei erneuter Analyse Ablauf/Besetzung behalten, soweit möglich
             try:
@@ -364,7 +405,8 @@ def _run_analysis(pid: str, audio: Path, text: str, title: str, authors: str, te
 
 @app.post('/api/projekte')
 async def new_project(audio: UploadFile = File(...), titel: str = Form(''), autoren: str = Form(''),
-                      text: str = Form('')):
+                      text: str = Form(''), melodie: str = Form('erste'), tempo_faktor: str = Form('1'),
+                      ablauf: str = Form('audio'), leadsheet: Optional[UploadFile] = File(None)):
     name = re.sub(r'[^\w.\- ]+', '_', audio.filename or 'audio.mp3')
     title = titel.strip() or Path(name).stem.replace('_', ' ')
     with _LOCK:
@@ -375,10 +417,13 @@ async def new_project(audio: UploadFile = File(...), titel: str = Form(''), auto
     with dest.open('wb') as f:
         shutil.copyfileobj(audio.file, f)
     (d / 'liedtext.txt').write_text(text, encoding='utf-8')
+    if leadsheet is not None and leadsheet.filename:
+        _save_leadsheet(pid, leadsheet)
+    o = _opts({'melodie': melodie, 'tempo_faktor': tempo_faktor, 'ablauf': ablauf}, {})
     _write_meta(pid, titel=title, autoren=autoren, audio=f"{SUB['original']}/{name}", status='analyse',
-                erstellt=time.time())
+                erstellt=time.time(), **o)
     JOBS[pid] = {'status': 'analyse', 'fortschritt': 0.0, 'schritt': 'Start'}
-    threading.Thread(target=_run_analysis, args=(pid, dest, text, title, autoren), daemon=True).start()
+    threading.Thread(target=_run_analysis, args=(pid, dest, text, title, autoren), kwargs=o, daemon=True).start()
     return {'id': pid}
 
 
@@ -409,14 +454,46 @@ def reanalyse(pid: str, data: dict):
     meta = json.loads((d / 'projekt.json').read_text(encoding='utf-8'))
     text = data.get('text', '')
     (d / 'liedtext.txt').write_text(text, encoding='utf-8')
-    tf = float(data.get('tempo_faktor', meta.get('tempo_faktor', 1.0)) or 1.0)
-    tf = tf if tf in (0.5, 1.0, 2.0) else 1.0
+    o = _opts(data, meta)
     JOBS[pid] = {'status': 'analyse', 'fortschritt': 0.0, 'schritt': 'Start'}
-    _write_meta(pid, status='analyse', tempo_faktor=tf)
+    _write_meta(pid, status='analyse', **o)
     threading.Thread(target=_run_analysis, args=(pid, d / meta['audio'], text, data.get('titel') or meta['titel'],
-                                                 data.get('autoren') or meta.get('autoren', ''), tf),
+                                                 data.get('autoren') or meta.get('autoren', '')), kwargs=o,
                      daemon=True).start()
     return {'ok': True}
+
+
+def _save_leadsheet(pid: str, up: UploadFile) -> Path:
+    ext = Path(up.filename or 'x.mscz').suffix.lower()
+    if ext not in ('.mscz', '.mscx'):
+        raise HTTPException(400, 'Bitte ein MuseScore-Leadsheet (.mscz) wählen.')
+    d = sub(pdir(pid), 'original')
+    for old in d.glob('leadsheet.*'):
+        old.unlink()
+    dest = d / f'leadsheet{ext}'
+    with dest.open('wb') as f:
+        shutil.copyfileobj(up.file, f)
+    return dest
+
+
+@app.post('/api/projekte/{pid}/leadsheet')
+async def upload_leadsheet(pid: str, datei: UploadFile = File(...)):
+    _save_leadsheet(pid, datei)
+    return set_ablauf(pid, {'quelle': 'leadsheet'})
+
+
+@app.post('/api/projekte/{pid}/ablauf')
+def set_ablauf(pid: str, data: dict):
+    """Ablauf neu aus einer Quelle setzen: audio (wie gehört), text (wie im Liedtext), leadsheet."""
+    quelle = data.get('quelle', 'audio')
+    song = load_song(pid)
+    try:
+        fehlt = _apply_ablauf(pid, song, quelle)
+    except Exception as e:
+        raise HTTPException(400, f'Leadsheet nicht lesbar ({type(e).__name__})')
+    save_song(pid, song)
+    _write_meta(pid, ablauf=song.notes.get('ablauf_quelle', 'audio'))
+    return {'song': song_payload(song), 'fehlt': fehlt}
 
 
 @app.get('/api/projekte/{pid}')
@@ -430,6 +507,7 @@ def get_project(pid: str):
         out['song'] = song_payload(song)
     lt = d / 'liedtext.txt'
     out['liedtext'] = lt.read_text(encoding='utf-8') if lt.exists() else ''
+    out['leadsheet'] = bool(_leadsheet_file(pid))
     return out
 
 

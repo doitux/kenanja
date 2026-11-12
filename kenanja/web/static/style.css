@@ -50,3 +50,33 @@ th{font-size:12.5px;color:var(--muted);font-weight:600}
 .xstelle select{width:auto;padding:2px 4px;font-size:12px;height:26px}
 .xstelle button.small{padding:2px 7px}
 .danger-text{color:#b42318}
+
+/* Assistent */
+.home{display:grid;grid-template-columns:3fr 2fr;gap:14px;align-items:start}
+@media (max-width:900px){.home{grid-template-columns:1fr}}
+.stepper{display:flex;align-items:center;gap:6px;margin:14px 0 18px;flex-wrap:wrap}
+.stepper button{border:1px solid var(--line);background:#fff;border-radius:22px;padding:6px 14px 6px 6px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.stepper button .num{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e9ee;color:var(--muted);font-size:13px;font-weight:700}
+.stepper button.active{border-color:var(--accent);color:var(--ink);font-weight:600}
+.stepper button.active .num{background:var(--accent);color:#fff}
+.stepper button.done .num{background:#d9ecd9;color:var(--green)}
+.stepper .sep{flex:0 0 18px;height:2px;background:var(--line)}
+.stepbody{min-height:120px}
+.navbar{display:flex;justify-content:space-between;align-items:center;margin:18px 0 6px}
+button.big{padding:10px 22px;font-size:16px;font-weight:600}
+.mehr{text-align:center;margin:14px 0 4px}
+button.link{border:none;background:none;color:var(--accent);padding:4px 6px}
+button.link:hover{text-decoration:underline;background:none}
+.choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin:6px 0 4px}
+.choice{display:flex;flex-direction:column;gap:3px;text-align:left;white-space:normal;border:1.5px solid var(--line);border-radius:9px;padding:10px 12px;cursor:pointer;background:#fff;margin:0;color:var(--ink);font-size:14px}
+.choice span{color:var(--muted);font-size:12.5px;line-height:1.35}
+.choice input{display:none}
+.choice.on{border-color:var(--accent);background:var(--soft)}
+.choice:disabled{opacity:.45;cursor:not-allowed}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:6px 0 10px}
+.summary>div{background:var(--soft);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;overflow:hidden}
+.summary span{font-size:12px}.summary b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill.warn{background:#fff1d6}
+.chords{color:var(--accent);font-weight:600;margin:6px 0;word-spacing:2px}
+.sec textarea.st{min-height:0;margin-top:6px}
+.keyopt{padding:9px 8px;border-bottom:1px solid var(--line);align-items:center}
